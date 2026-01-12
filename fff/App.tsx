@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import QRCode from 'react-qr-code';
-import { Zap, Server, Activity, ShieldCheck, QrCode, Globe, Clock, CheckCircle2, AlertCircle, Copy, Check, Link as LinkIcon, AlertTriangle } from 'lucide-react';
+import { Zap, Server, Activity, ShieldCheck, QrCode, Globe, Clock, CheckCircle2, AlertCircle, Copy, Check, Link as LinkIcon, AlertTriangle, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [deployDomain, setDeployDomain] = useState('');
@@ -160,9 +160,17 @@ const App: React.FC = () => {
                          <div className={`p-1.5 rounded-full ${isBotReady ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
                              {isBotReady ? <CheckCircle2 size={18}/> : <AlertCircle size={18}/>}
                          </div>
-                         <span className={`text-sm font-medium ${isBotReady ? 'text-gray-300' : 'text-red-300'}`}>
-                             {fetchError ? '连接失败' : (isBotReady ? 'Bot Token 已配置' : 'Token 未配置')}
-                         </span>
+                         <div className="flex flex-col">
+                             <span className={`text-sm font-medium ${isBotReady ? 'text-gray-300' : 'text-red-300'}`}>
+                                 {fetchError ? '连接失败' : (isBotReady ? 'Bot Token 已配置' : 'Token 未配置')}
+                             </span>
+                             {/* 如果 Token 未配置但没有报错，提示用户重新部署 */}
+                             {!isBotReady && !fetchError && (
+                                 <span className="text-[10px] text-orange-400 flex items-center gap-1">
+                                     <RefreshCw size={10}/> 添加变量后需<b>重新部署</b>
+                                 </span>
+                             )}
+                         </div>
                     </div>
                     {/* KV 状态检查 */}
                     {serverStatus && serverStatus.kv_ready === false && (
@@ -177,10 +185,10 @@ const App: React.FC = () => {
                     )}
                     <p className="text-xs text-gray-500 leading-relaxed pl-9">
                         {isBotReady 
-                            ? '首次使用请点击右上角 "绑定 Webhook" 激活。之后在 Telegram 发送 /start 即可。' 
+                            ? '配置成功。请点击右上角 "绑定 Webhook" 按钮，然后向 Bot 发送 /start 开始使用。' 
                             : fetchError 
                                 ? '请确保 Functions 已正确部署且运行中。'
-                                : '请在 Cloudflare Pages 后台设置环境变量: TG_TOKEN'}
+                                : 'Cloudflare 环境变量非实时生效。请添加 TG_TOKEN 后，在 Pages 后台点击 "Retry deployment"。'}
                     </p>
                 </div>
             </div>
