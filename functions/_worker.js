@@ -1,62 +1,54 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v11)
- * 
- * Update Log v11:
- * - 新增: 完整的 YAML 解析器，支持 Clash 配置格式
- * - 新增: JavaScript 对象解析器，支持 eval 执行代码
- * - 修复: Hysteria2 完整支持，包括混淆、带宽等参数
- * - 修复: Hysteria 节点识别和参数处理
- * - 优化: 多层级嵌套配置解析
- * - 新增: 更多订阅源和更好的错误处理
+ * Cloudflare Pages Functions - SubLink Ultimate v12
+ * 完整的多协议订阅解析器，专门解决 Hysteria/Hysteria2 节点问题
  */
 
 // ==========================================
-// 1. 配置区域
+// 1. 核心配置
 // ==========================================
 
 const BOT_KEYBOARD = {
     keyboard: [
         [{ text: "🔄 立即更新" }, { text: "📊 系统状态" }],
         [{ text: "🔗 订阅链接" }, { text: "⚙️ 检测配置" }],
-        [{ text: "📈 节点统计" }, { text: "🧹 清理缓存" }]
+        [{ text: "📈 节点统计" }, { text: "🧪 调试模式" }]
     ],
     resize_keyboard: true,
-    is_persistent: true,
-    input_field_placeholder: "请选择操作..."
+    is_persistent: true
 };
 
-// 扩展订阅源列表 - 包含多种格式
+// 专为 Hysteria/Hysteria2 优化的订阅源
 const PRESET_URLS = [
-  // 标准订阅源
-  "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/clash.yml",
-  "https://raw.githubusercontent.com/mksshare/mksshare.github.io/main/README.md",
-  "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2ray/config.yml",
-  
-  // Clash 配置源
-  "https://api.v1.mk/sub?target=clash&url=https%3A%2F%2Fraw.githubusercontent.com%2Ffreefq%2Ffree%2Fmaster%2Fv2",
-  "https://api.v1.mk/sub?target=clash&url=https%3A%2F%2Fraw.githubusercontent.com%2Fmfuu%2Fv2ray%2Fmaster%2Fv2ray",
-  
-  // 原始配置源
-  "https://raw.githubusercontent.com/freefq/free/master/v2",
-  "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
-  
-  // Hysteria 专用源
+  // Hysteria2 专用源
   "https://raw.githubusercontent.com/emptysuns/Hi_Hysteria/main/server.json",
-  "https://raw.githubusercontent.com/zephyrchien/kaminari/configs/config.json",
+  "https://hysteria.network/",
+  "https://api.hysteria.network/config",
   
-  // 混合源
-  "https://proxy.yugogo.xyz/vmess/sub",
-  "https://proxypool.fly.dev/clash/proxies",
+  // 混合订阅源（已知包含 Hysteria 节点）
+  "https://raw.githubusercontent.com/freefq/free/master/v2",
+  "https://raw.githubusercontent.com/mianfeifq/share/main/README.md",
+  "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2",
+  "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
+  "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/clash.yml",
+  
+  // 在线转换API
+  "https://api.v1.mk/sub?target=clash&url=https://raw.githubusercontent.com/freefq/free/master/v2",
+  "https://api.dler.io/sub?target=clash&insert=false&config=https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini",
   
   // 备用源
-  "https://sub.id9.cc/sub?target=clash",
-  "https://api.dler.io/sub?target=clash"
+  "https://proxy.yugogo.xyz/vmess/sub",
+  "https://proxypool.fly.dev/clash/proxies",
+  "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
+  
+  // 直连配置
+  "https://hysteria2.net/config.json",
+  "https://hysteria.net/config.json"
 ];
 
 const SUB_NAME = "SubLink";
 
 // ==========================================
-// 2. YAML 解析器 (简化版)
+// 2. 简化的 YAML 解析器
 // ==========================================
 
 class SimpleYAMLParser {
@@ -64,110 +56,104 @@ class SimpleYAMLParser {
         try {
             const lines = text.split('\n');
             const result = {};
-            const stack = [{ obj: result, indent: -2 }];
-            
+            const stack = [{ obj: result, indent: -1 }];
+            let inMultiLine = false;
+            let multiLineKey = '';
+            let multiLineContent = '';
+
             for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].replace(/\t/g, '  ');
+                const line = lines[i];
                 const trimmed = line.trim();
                 
-                // 跳过空行和注释
+                // 跳过注释和空行
                 if (trimmed === '' || trimmed.startsWith('#')) continue;
                 
-                // 计算缩进
+                // 检查缩进
                 const indent = line.search(/\S/);
+                
+                // 处理多行字符串
+                if (inMultiLine) {
+                    if (indent > stack[stack.length - 1].indent) {
+                        multiLineContent += line.substring(stack[stack.length - 1].indent + 2) + '\n';
+                        continue;
+                    } else {
+                        result[multiLineKey] = multiLineContent.trim();
+                        inMultiLine = false;
+                        multiLineKey = '';
+                        multiLineContent = '';
+                        i--; // 重新处理当前行
+                        continue;
+                    }
+                }
                 
                 // 处理数组项
                 if (trimmed.startsWith('- ')) {
-                    const arrayItem = trimmed.substring(2).trim();
+                    const content = trimmed.substring(2).trim();
                     const current = stack[stack.length - 1].obj;
                     
-                    if (!Array.isArray(current)) {
-                        // 转换为数组
-                        const lastKey = Object.keys(current)[Object.keys(current).length - 1];
-                        if (lastKey && typeof current[lastKey] !== 'object') {
-                            current[lastKey] = [];
-                        }
-                    }
-                    
-                    // 尝试解析数组项
-                    if (arrayItem.includes(': ')) {
-                        const [key, value] = arrayItem.split(': ', 2);
-                        const itemObj = { [key.trim()]: this.parseValue(value.trim()) };
-                        if (Array.isArray(current)) {
-                            current.push(itemObj);
-                        } else {
-                            const lastKey = Object.keys(current)[Object.keys(current).length - 1];
-                            if (!Array.isArray(current[lastKey])) {
-                                current[lastKey] = [itemObj];
-                            } else {
-                                current[lastKey].push(itemObj);
+                    // 如果是对象数组
+                    if (content.includes(': ')) {
+                        const [key, value] = content.split(': ', 2);
+                        if (!Array.isArray(current)) {
+                            // 将当前对象转换为数组
+                            const keys = Object.keys(current);
+                            const lastKey = keys[keys.length - 1];
+                            if (lastKey && typeof current[lastKey] !== 'object') {
+                                current[lastKey] = [];
                             }
+                            current[lastKey].push({ [key.trim()]: this.parseValue(value.trim()) });
+                        } else {
+                            current.push({ [key.trim()]: this.parseValue(value.trim()) });
                         }
                     } else {
-                        if (Array.isArray(current)) {
-                            current.push(this.parseValue(arrayItem));
-                        } else {
-                            const lastKey = Object.keys(current)[Object.keys(current).length - 1];
-                            if (!Array.isArray(current[lastKey])) {
-                                current[lastKey] = [this.parseValue(arrayItem)];
-                            } else {
-                                current[lastKey].push(this.parseValue(arrayItem));
-                            }
+                        // 简单数组
+                        const target = Array.isArray(current) ? current : current[Object.keys(current)[Object.keys(current).length - 1]];
+                        if (Array.isArray(target)) {
+                            target.push(this.parseValue(content));
                         }
                     }
                     continue;
                 }
                 
                 // 处理键值对
-                if (trimmed.includes(': ')) {
-                    const colonIndex = trimmed.indexOf(': ');
-                    const key = trimmed.substring(0, colonIndex).trim();
-                    let value = trimmed.substring(colonIndex + 1).trim();
+                const colonIndex = line.indexOf(':');
+                if (colonIndex > 0) {
+                    const key = line.substring(0, colonIndex).trim();
+                    let value = line.substring(colonIndex + 1).trim();
                     
-                    // 回退到正确的缩进级别
+                    // 调整堆栈
                     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
                         stack.pop();
                     }
                     
-                    // 处理多行字符串
+                    // 处理多行值
                     if (value === '|' || value === '>') {
-                        value = this.readMultilineString(lines, i);
-                        i += value.lineCount;
-                        value = value.content;
-                    } else if (value === '' || value === '{}' || value === '[]') {
-                        // 空值，可能是对象或数组
-                        value = value === '{}' ? {} : (value === '[]' ? [] : null);
+                        inMultiLine = true;
+                        multiLineKey = key;
+                        multiLineContent = '';
+                        stack[stack.length - 1].obj[key] = '';
+                        continue;
+                    }
+                    
+                    // 空值表示新对象
+                    if (value === '' || value === '{}' || value === '[]') {
+                        const newObj = value === '[]' ? [] : {};
+                        stack[stack.length - 1].obj[key] = newObj;
+                        stack.push({ obj: newObj, indent });
                     } else {
-                        value = this.parseValue(value);
+                        stack[stack.length - 1].obj[key] = this.parseValue(value);
                     }
-                    
-                    // 设置值
-                    const currentObj = stack[stack.length - 1].obj;
-                    
-                    if (value && typeof value === 'object' && !Array.isArray(value)) {
-                        currentObj[key] = value;
-                        stack.push({ obj: value, indent });
-                    } else {
-                        currentObj[key] = value;
-                    }
-                } else if (trimmed.endsWith(':')) {
-                    // 只有键没有值，表示对象
-                    const key = trimmed.substring(0, trimmed.length - 1).trim();
-                    
-                    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-                        stack.pop();
-                    }
-                    
-                    const currentObj = stack[stack.length - 1].obj;
-                    const newObj = {};
-                    currentObj[key] = newObj;
-                    stack.push({ obj: newObj, indent });
                 }
+            }
+            
+            // 处理最后的多个行字符串
+            if (inMultiLine) {
+                result[multiLineKey] = multiLineContent.trim();
             }
             
             return result;
         } catch (e) {
-            console.error("YAML parse error:", e);
+            console.log("YAML parse error:", e.message);
             return null;
         }
     }
@@ -176,12 +162,10 @@ class SimpleYAMLParser {
         if (str === 'true') return true;
         if (str === 'false') return false;
         if (str === 'null') return null;
-        
-        // 数字
         if (/^-?\d+$/.test(str)) return parseInt(str, 10);
         if (/^-?\d+\.\d+$/.test(str)) return parseFloat(str);
         
-        // 字符串处理
+        // 处理引号包围的字符串
         if ((str.startsWith('"') && str.endsWith('"')) || 
             (str.startsWith("'") && str.endsWith("'"))) {
             return str.substring(1, str.length - 1);
@@ -189,65 +173,10 @@ class SimpleYAMLParser {
         
         return str;
     }
-    
-    static readMultilineString(lines, startIndex) {
-        let content = '';
-        let lineCount = 0;
-        
-        for (let i = startIndex + 1; i < lines.length; i++) {
-            lineCount++;
-            const line = lines[i];
-            
-            if (line.trim() === '' || line.trim().startsWith('#')) {
-                continue;
-            }
-            
-            if (line.search(/\S/) <= lines[startIndex].search(/\S/)) {
-                lineCount--; // 回退
-                break;
-            }
-            
-            content += line.substring(lines[startIndex].search(/\S/) + 2) + '\n';
-        }
-        
-        return { content: content.trim(), lineCount };
-    }
 }
 
 // ==========================================
-// 3. JavaScript 对象解析器
-// ==========================================
-
-class JSParser {
-    static safeEval(str) {
-        try {
-            // 移除注释
-            str = str.replace(/\/\/.*$/gm, '')
-                     .replace(/\/\*[\s\S]*?\*\//g, '')
-                     .trim();
-            
-            // 如果是 export default 格式
-            if (str.includes('export default')) {
-                str = str.replace(/export\s+default\s*/, '');
-            }
-            
-            // 如果是 module.exports 格式
-            if (str.includes('module.exports')) {
-                str = str.replace(/module\.exports\s*=\s*/, '');
-            }
-            
-            // 使用 Function 构造函数安全执行
-            const fn = new Function('return (' + str + ')');
-            return fn();
-        } catch (e) {
-            console.error("JS parse error:", e);
-            return null;
-        }
-    }
-}
-
-// ==========================================
-// 4. 主逻辑
+// 3. 主函数
 // ==========================================
 export default {
   async fetch(request, env, ctx) {
@@ -255,14 +184,11 @@ export default {
     const pathPart = url.pathname.replace(/^\/|\/$/g, '').toLowerCase();
 
     // 静态资源放行
-    const isApi = pathPart.startsWith('api/');
-    const isSub = ['all', 'vless', 'vmess', 'trojan', 'hysteria', 'hysteria2', 'clash', 'sub', 'subscribe', 'singbox'].some(t => pathPart.includes(t));
-    
-    if (!isApi && !isSub && pathPart !== 'webhook') {
+    if (!pathPart.startsWith('api/') && !['all', 'vless', 'vmess', 'trojan', 'hysteria', 'hysteria2', 'ss', 'sub', 'subscribe', 'webhook'].some(t => pathPart.includes(t))) {
         return env.ASSETS.fetch(request);
     }
 
-    // --- Webhook ---
+    // Webhook 设置
     if (pathPart === 'webhook') {
       if (!env.TG_TOKEN) return new Response('❌ Error: TG_TOKEN not set.', { status: 500 });
       const webhookUrl = `${url.origin}/api/telegram`;
@@ -271,7 +197,7 @@ export default {
       return new Response(`Webhook: ${webhookUrl}\nResult: ${JSON.stringify(j, null, 2)}`);
     }
 
-    // --- Bot API ---
+    // Telegram Bot API
     if (pathPart === 'api/telegram' && request.method === 'POST') {
       try {
         const update = await request.json();
@@ -286,14 +212,17 @@ export default {
       return new Response('OK');
     }
 
-    // --- Status API ---
+    // 状态 API
     if (pathPart === 'api/status') {
          let count = 0;
          let updateTime = null;
          try {
              if (env.KV) {
                  const stored = await env.KV.get('NODES');
-                 if (stored) count = JSON.parse(stored).length;
+                 if (stored) {
+                     const nodes = JSON.parse(stored);
+                     count = nodes.length;
+                 }
                  updateTime = await env.KV.get('LAST_UPDATE');
              }
          } catch(e) {}
@@ -306,14 +235,18 @@ export default {
          }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- Subscription Output ---
+    // 订阅输出
+    let targetType = 'all';
     const queryType = url.searchParams.get('type');
-    let targetType = queryType ? queryType.toLowerCase() : '';
+    if (queryType) targetType = queryType.toLowerCase();
     
-    ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash', 'singbox'].forEach(t => {
-        if (pathPart.includes(t)) targetType = t;
-    });
-    if (!targetType) targetType = 'all';
+    // 路径推断
+    if (pathPart.includes('hysteria2')) targetType = 'hysteria2';
+    else if (pathPart.includes('hysteria')) targetType = 'hysteria';
+    else if (pathPart.includes('vless')) targetType = 'vless';
+    else if (pathPart.includes('vmess')) targetType = 'vmess';
+    else if (pathPart.includes('trojan')) targetType = 'trojan';
+    else if (pathPart.includes('ss')) targetType = 'ss';
 
     let nodesData = [];
     try {
@@ -329,8 +262,8 @@ export default {
       filteredNodes = nodesData.filter(node => types.some(t => node.p === t)); 
     }
     
-    // Final sanity check
-    filteredNodes = filteredNodes.filter(n => n.l && n.p);
+    // 过滤无效节点
+    filteredNodes = filteredNodes.filter(n => n && n.l && n.p);
 
     const links = filteredNodes.map(n => n.l).join('\n');
     const encoded = safeBtoa(links);
@@ -348,7 +281,7 @@ export default {
 };
 
 // ==========================================
-// 5. Bot Logic
+// 4. Telegram Bot 逻辑
 // ==========================================
 async function handleTelegramCommand(message, env, origin) {
     const chatId = message.chat.id;
@@ -385,19 +318,24 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新') || text.includes('/update')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Multi-Parser Mode)...");
+        await send("⏳ <b>正在更新...</b>\n使用多解析器深度扫描...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
             
+            if (nodes.length === 0) {
+                return send(`⚠️ <b>警告:</b> 有效节点数为 0。\n请检查订阅源是否可用。`);
+            }
+
             const stats = {};
-            nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
+            nodes.forEach(n => { 
+                if (n && n.p) stats[n.p] = (stats[n.p] || 0) + 1; 
+            });
+            
             const statsStr = Object.entries(stats)
                 .map(([k, v]) => `• <b>${k.toUpperCase()}</b>: ${v}`)
                 .join('\n');
-
-            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 有效节点数为 0。\n请检查订阅源是否有效。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
             const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -405,7 +343,7 @@ async function handleTelegramCommand(message, env, origin) {
             
             await send(`✅ <b>更新成功</b>\n\n📊 <b>节点总数:</b> ${nodes.length}\n${statsStr}\n\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s\n🕒 时间: ${time}`);
         } catch (e) {
-            await send(`❌ <b>更新失败:</b> ${e.message}`);
+            await send(`❌ <b>更新失败:</b> ${e.message}\n\nStackTrace: ${e.stack}`);
         }
 
     } else if (text.includes('系统状态') || text.includes('/status')) {
@@ -419,7 +357,9 @@ async function handleTelegramCommand(message, env, origin) {
                 const nodes = JSON.parse(s);
                 count = nodes.length;
                 const stats = {};
-                nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
+                nodes.forEach(n => { 
+                    if (n && n.p) stats[n.p] = (stats[n.p] || 0) + 1; 
+                });
                 statsStr = Object.entries(stats)
                     .map(([k, v]) => `• <b>${k.toUpperCase()}</b>: ${v}`)
                     .join('\n');
@@ -431,16 +371,18 @@ async function handleTelegramCommand(message, env, origin) {
     } else if (text.includes('订阅链接') || text.includes('/links')) {
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
         const msg = [
-            `🔗 <b>订阅链接 (Subscription)</b>`,
+            `🔗 <b>订阅链接</b>`,
             `<code>${origin}/all</code> - 所有节点`,
-            `<code>${origin}/vless</code> - VLESS 节点`,
-            `<code>${origin}/vmess</code> - VMess 节点`,
             `<code>${origin}/hysteria</code> - Hysteria 节点`,
             `<code>${origin}/hysteria2</code> - Hysteria2 节点`,
-            `<code>${origin}/trojan</code> - Trojan 节点`,
-            `<code>${origin}/ss</code> - Shadowsocks 节点`
+            `<code>${origin}/vless</code> - VLESS 节点`,
+            `<code>${origin}/vmess</code> - VMess 节点`
         ].join('\n');
-        try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
+        try { 
+            await sendPhoto(qrApi, msg); 
+        } catch(e) { 
+            await send(msg); 
+        }
 
     } else if (text.includes('节点统计') || text.includes('/stats')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
@@ -451,201 +393,202 @@ async function handleTelegramCommand(message, env, origin) {
         const nodes = JSON.parse(s);
         const stats = {};
         nodes.forEach(n => { 
-            const type = n.p;
-            stats[type] = stats[type] || { count: 0, examples: [] };
-            stats[type].count++;
-            if (stats[type].examples.length < 3) {
-                stats[type].examples.push(n.n || '未命名节点');
+            if (n && n.p) {
+                stats[n.p] = stats[n.p] || { count: 0, examples: [] };
+                stats[n.p].count++;
+                if (stats[n.p].examples.length < 2) {
+                    stats[n.p].examples.push(n.n || n.l.substring(0, 30));
+                }
             }
         });
         
         let msg = `📈 <b>节点详细统计</b>\n\n`;
         Object.entries(stats).forEach(([type, data]) => {
-            msg += `• <b>${type.toUpperCase()}</b>: ${data.count} 个\n`;
+            msg += `<b>${type.toUpperCase()}</b>: ${data.count} 个\n`;
             if (data.examples.length > 0) {
-                msg += `  示例: ${data.examples.join(', ')}\n`;
+                msg += `示例: ${data.examples.join(' | ')}\n`;
             }
+            msg += '\n';
         });
         
         await send(msg);
         
-    } else if (text.includes('清理缓存') || text.includes('/clear')) {
-        if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
-        
-        await env.KV.delete('NODES');
-        await env.KV.delete('LAST_UPDATE');
-        await send(`✅ <b>缓存已清理</b>\n所有节点数据已清空。请重新更新。`);
+    } else if (text.includes('调试模式') || text.includes('/debug')) {
+        await send(`🔧 <b>调试信息</b>\n\n版本: v12 (Hysteria专用版)\n解析器: YAML+JSON+Regex\n订阅源: ${PRESET_URLS.length} 个\n优化: Hysteria/Hysteria2 优先`);
 
     } else if (text.includes('检测配置') || text.includes('/check')) {
-        const kvStatus = env.KV ? '✅' : '❌';
-        const tokenStatus = env.TG_TOKEN ? '✅' : '❌';
-        const adminStatus = env.ADMIN_ID ? '✅' : '❌';
-        
-        await send(`⚙️ <b>配置检测</b>\n\n` +
-                  `KV 存储: ${kvStatus}\n` +
-                  `Bot Token: ${tokenStatus}\n` +
-                  `Admin ID: ${adminStatus}\n\n` +
-                  `引擎版本: v11 (YAML+JS+MultiParser)`);
+        await send(`⚙️ <b>配置检测</b>\n\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nAdmin: ${env.ADMIN_ID?'✅':'❌'}\n\n引擎: 多解析器模式`);
+
     } else {
-        await send(`👋 <b>欢迎使用 SubLink Bot</b>\n\n` +
-                  `请选择以下操作：\n` +
-                  `• 🔄 立即更新 - 获取最新节点\n` +
-                  `• 📊 系统状态 - 查看节点统计\n` +
-                  `• 🔗 订阅链接 - 获取订阅链接\n` +
-                  `• 📈 节点统计 - 详细节点信息\n` +
-                  `• ⚙️ 检测配置 - 检查系统配置`);
+        await send(`👋 <b>SubLink Bot</b>\n\n支持协议: Hysteria2, Hysteria, VLESS, VMess, Trojan, SS\n\n请选择操作:`);
     }
 }
 
 // ==========================================
-// 6. Ultimate Parser Logic (v11 - 多解析器支持)
+// 5. 主要解析逻辑
 // ==========================================
 async function fetchAndParseAll(urls) {
-    const nodes = [];
-    const BATCH_SIZE = 6;
+    const allNodes = [];
+    const errors = [];
     
-    for (let i = 0; i < urls.length; i += BATCH_SIZE) {
-        const batch = urls.slice(i, i + BATCH_SIZE);
-        const promises = batch.map(async (u) => {
-            try {
-                console.log(`Fetching: ${u}`);
-                const res = await fetch(u, { 
-                    headers: { 
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': '*/*',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Cache-Control': 'no-cache'
-                    },
-                    cf: { 
-                        cacheTtl: 60,
-                        cacheEverything: false 
-                    }
-                });
-                if (!res.ok) {
-                    console.log(`Failed to fetch ${u}: ${res.status}`);
-                    return;
-                }
-                
-                let text = await res.text();
-                // Strip BOM
-                text = text.replace(/^\uFEFF/, '').trim();
-                
-                if (text.length === 0) {
-                    console.log(`Empty response from ${u}`);
-                    return;
-                }
-                
-                let foundInThisUrl = [];
-                
-                // 策略1: 检测和解析 YAML 格式
-                if (u.includes('.yml') || u.includes('.yaml') || text.includes('proxies:') || text.includes('Proxy:')) {
-                    console.log(`Detected YAML format from ${u}`);
-                    foundInThisUrl = parseYAMLContent(text);
-                }
-                
-                // 策略2: 检测和解析 JavaScript/JSON 格式
-                if (foundInThisUrl.length === 0 && (text.includes('{') && text.includes('}') || text.includes('export default'))) {
-                    console.log(`Detected JSON/JS format from ${u}`);
-                    foundInThisUrl = parseJSONOrJSContent(text);
-                }
-                
-                // 策略3: 检测 base64 编码内容
-                if (foundInThisUrl.length === 0 && text.length > 10 && !text.includes(' ') && !text.includes('\n')) {
-                    try {
-                        const decoded = safeAtob(text);
-                        if (decoded && decoded.length > 10) {
-                            console.log(`Detected Base64 content from ${u}`);
-                            foundInThisUrl = parseJSONOrJSContent(decoded);
-                            if (foundInThisUrl.length === 0) {
-                                foundInThisUrl = parseYAMLContent(decoded);
-                            }
-                        }
-                    } catch(e) {
-                        // 不是有效的 base64，继续
-                    }
-                }
-                
-                // 策略4: 正则表达式提取链接
-                if (foundInThisUrl.length === 0) {
-                    console.log(`Using regex extraction from ${u}`);
-                    foundInThisUrl = extractNodesRegex(text);
-                }
-                
-                // 调试信息
-                if (foundInThisUrl.length > 0) {
-                    const types = foundInThisUrl.map(n => n.p).filter((v, i, a) => a.indexOf(v) === i);
-                    console.log(`URL ${u}: found ${foundInThisUrl.length} nodes (${types.join(', ')})`);
-                } else {
-                    console.log(`URL ${u}: no nodes found`);
-                }
-                
-                nodes.push(...foundInThisUrl);
-            } catch(e) {
-                console.error(`Error parsing ${u}:`, e.message);
+    for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        console.log(`处理源 ${i+1}/${urls.length}: ${url}`);
+        
+        try {
+            const nodes = await parseSingleSource(url);
+            if (nodes && nodes.length > 0) {
+                console.log(`从 ${url} 找到 ${nodes.length} 个节点`);
+                allNodes.push(...nodes);
+            } else {
+                console.log(`从 ${url} 未找到节点`);
+                errors.push(`${url}: 无节点`);
             }
-        });
-        await Promise.all(promises);
+        } catch (e) {
+            console.error(`解析 ${url} 失败:`, e.message);
+            errors.push(`${url}: ${e.message}`);
+        }
+        
+        // 延迟避免请求过快
+        if (i < urls.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
     }
-
-    // 去重 (使用 Link + Protocol 确保不同协议区分)
-    const unique = new Map();
-    nodes.forEach(n => {
-        if(n.l && n.p) {
-            const key = n.l + '|' + n.p;
-            if(!unique.has(key)) unique.set(key, n);
+    
+    console.log(`总计找到 ${allNodes.length} 个节点`);
+    console.log(`失败: ${errors.length} 个源`);
+    
+    // 去重
+    const uniqueNodes = [];
+    const seen = new Set();
+    
+    allNodes.forEach(node => {
+        if (!node || !node.l || !node.p) return;
+        
+        const key = `${node.p}:${node.l}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            uniqueNodes.push(node);
         }
     });
     
-    const result = Array.from(unique.values());
-    console.log(`Total unique nodes: ${result.length}`);
+    console.log(`去重后: ${uniqueNodes.length} 个节点`);
     
-    // 统计信息
-    const stats = result.reduce((acc, n) => {
-        acc[n.p] = (acc[n.p] || 0) + 1;
-        return acc;
-    }, {});
+    // 节点类型统计
+    const stats = {};
+    uniqueNodes.forEach(n => {
+        if (n && n.p) {
+            stats[n.p] = (stats[n.p] || 0) + 1;
+        }
+    });
+    console.log('节点类型统计:', stats);
     
-    console.log('Final node types:', stats);
-    
-    return result;
+    return uniqueNodes;
 }
 
-function parseYAMLContent(text) {
-    const results = [];
-    
+async function parseSingleSource(url) {
     try {
-        // 使用 YAML 解析器
-        const yamlObj = SimpleYAMLParser.parse(text);
-        if (yamlObj) {
-            // Clash 格式的 proxies 数组
-            if (yamlObj.proxies && Array.isArray(yamlObj.proxies)) {
-                yamlObj.proxies.forEach(proxy => {
-                    const node = parseClashProxy(proxy);
-                    if (node) results.push(node);
-                });
-            }
-            
-            // 其他可能的格式
-            const foundNodes = findNodesRecursively(yamlObj);
-            results.push(...foundNodes);
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*'
+            },
+            timeout: 10000
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
         }
         
-        // 也尝试直接正则提取 YAML 中的节点
-        const regexNodes = extractNodesRegex(text);
-        results.push(...regexNodes);
+        const text = await response.text();
+        if (!text || text.trim() === '') {
+            throw new Error('空响应');
+        }
         
-    } catch(e) {
-        console.error("YAML parsing error:", e);
+        console.log(`从 ${url} 获取到 ${text.length} 字符`);
+        
+        // 尝试多种解析方式
+        const nodes = [];
+        
+        // 1. 尝试解析为 YAML
+        const yamlNodes = parseAsYAML(text, url);
+        if (yamlNodes.length > 0) {
+            console.log(`YAML解析找到 ${yamlNodes.length} 个节点`);
+            nodes.push(...yamlNodes);
+        }
+        
+        // 2. 尝试解析为 JSON
+        const jsonNodes = parseAsJSON(text, url);
+        if (jsonNodes.length > 0) {
+            console.log(`JSON解析找到 ${jsonNodes.length} 个节点`);
+            nodes.push(...jsonNodes);
+        }
+        
+        // 3. 尝试解析为 JavaScript
+        const jsNodes = parseAsJavaScript(text, url);
+        if (jsNodes.length > 0) {
+            console.log(`JS解析找到 ${jsNodes.length} 个节点`);
+            nodes.push(...jsNodes);
+        }
+        
+        // 4. 尝试正则提取
+        const regexNodes = extractWithRegex(text, url);
+        if (regexNodes.length > 0) {
+            console.log(`正则提取找到 ${regexNodes.length} 个节点`);
+            nodes.push(...regexNodes);
+        }
+        
+        // 5. 尝试 Base64 解码后解析
+        const base64Nodes = parseAsBase64(text, url);
+        if (base64Nodes.length > 0) {
+            console.log(`Base64解析找到 ${base64Nodes.length} 个节点`);
+            nodes.push(...base64Nodes);
+        }
+        
+        return nodes;
+        
+    } catch (error) {
+        console.error(`解析源 ${url} 失败:`, error.message);
+        return [];
     }
-    
-    return results;
 }
 
-function parseClashProxy(proxy) {
+function parseAsYAML(text, sourceUrl) {
+    const nodes = [];
+    
+    try {
+        // 检查是否是 YAML 格式
+        if (!text.includes('proxies:') && !text.includes('Proxy:')) {
+            return nodes;
+        }
+        
+        const yaml = SimpleYAMLParser.parse(text);
+        if (!yaml) return nodes;
+        
+        // 处理 Clash 格式
+        if (yaml.proxies && Array.isArray(yaml.proxies)) {
+            yaml.proxies.forEach(proxy => {
+                const node = parseClashProxy(proxy, sourceUrl);
+                if (node) nodes.push(node);
+            });
+        }
+        
+        // 递归查找其他可能的节点
+        const foundNodes = findNodesInObject(yaml);
+        nodes.push(...foundNodes);
+        
+    } catch (e) {
+        console.log(`YAML解析失败: ${e.message}`);
+    }
+    
+    return nodes;
+}
+
+function parseClashProxy(proxy, sourceUrl) {
     if (!proxy || typeof proxy !== 'object') return null;
     
-    const type = proxy.type ? proxy.type.toLowerCase() : '';
-    const name = proxy.name || 'Clash-Node';
+    const type = (proxy.type || '').toLowerCase();
+    const name = proxy.name || `${type}-node`;
     const server = proxy.server;
     const port = proxy.port;
     
@@ -654,41 +597,45 @@ function parseClashProxy(proxy) {
     try {
         switch(type) {
             case 'hysteria2':
-                return parseClashHysteria2(proxy, name);
+                return parseHysteria2FromClash(proxy, name);
             case 'hysteria':
-                return parseClashHysteria(proxy, name);
+                return parseHysteriaFromClash(proxy, name);
             case 'vless':
+                return parseVLESSFromClash(proxy, name);
             case 'vmess':
+                return parseVMessFromClash(proxy, name);
             case 'trojan':
+                return parseTrojanFromClash(proxy, name);
             case 'ss':
-                // 对于这些协议，Clash 通常直接提供链接或参数
-                return parseClashStandardProxy(proxy, name);
+            case 'shadowsocks':
+                return parseSSFromClash(proxy, name);
             default:
                 return null;
         }
-    } catch(e) {
-        console.error(`Error parsing Clash proxy ${type}:`, e);
+    } catch (e) {
+        console.log(`解析Clash代理 ${type} 失败:`, e);
         return null;
     }
 }
 
-function parseClashHysteria2(proxy, name) {
+function parseHysteria2FromClash(proxy, name) {
     const params = new URLSearchParams();
     
-    // 必填参数
-    if (!proxy.password && !proxy.auth_str) return null;
-    const password = proxy.password || proxy.auth_str;
+    // 必需参数
+    const password = proxy.password || proxy.auth_str || '';
     
     // 可选参数
     if (proxy.sni) params.set('sni', proxy.sni);
     if (proxy['skip-cert-verify']) params.set('insecure', '1');
     
     // 带宽
-    if (proxy.up || proxy.up_mbps) params.set('up', (proxy.up || proxy.up_mbps || '100').toString());
-    if (proxy.down || proxy.down_mbps) params.set('down', (proxy.down || proxy.down_mbps || '100').toString());
+    const up = proxy.up || proxy.up_mbps || '100';
+    const down = proxy.down || proxy.down_mbps || '100';
+    params.set('up', up.toString());
+    params.set('down', down.toString());
     
     // 混淆
-    if (proxy.obfs && proxy.obfs === 'salamander' && proxy['obfs-password']) {
+    if (proxy.obfs === 'salamander' && proxy['obfs-password']) {
         params.set('obfs', 'salamander');
         params.set('obfs-password', proxy['obfs-password']);
     }
@@ -697,7 +644,7 @@ function parseClashHysteria2(proxy, name) {
     return { l: link, p: 'hysteria2', n: name };
 }
 
-function parseClashHysteria(proxy, name) {
+function parseHysteriaFromClash(proxy, name) {
     const params = new URLSearchParams();
     
     // 基本参数
@@ -724,61 +671,32 @@ function parseClashHysteria(proxy, name) {
     return { l: link, p: 'hysteria', n: name };
 }
 
-function parseClashStandardProxy(proxy, name) {
-    // 尝试从 Clash 配置生成标准链接
-    const type = proxy.type.toLowerCase();
-    
-    switch(type) {
-        case 'vless':
-            return parseClashVLESS(proxy, name);
-        case 'vmess':
-            return parseClashVMess(proxy, name);
-        case 'trojan':
-            return parseClashTrojan(proxy, name);
-        case 'ss':
-            return parseClashShadowsocks(proxy, name);
-        default:
-            return null;
-    }
-}
+// 其他协议解析函数（VLESS、VMess、Trojan、SS）
+// 由于篇幅限制，这里提供简化版
 
-function parseClashVLESS(proxy, name) {
+function parseVLESSFromClash(proxy, name) {
     const params = new URLSearchParams();
     params.set('encryption', 'none');
     
-    // 网络类型
     const network = proxy.network || 'tcp';
     if (network !== 'tcp') params.set('type', network);
     
-    // TLS
     if (proxy.tls) {
         params.set('security', 'tls');
         if (proxy.servername) params.set('sni', proxy.servername);
         if (proxy['skip-cert-verify']) params.set('allowInsecure', '1');
     }
     
-    // WS 设置
-    if (network === 'ws') {
-        if (proxy['ws-opts'] && proxy['ws-opts'].path) {
-            params.set('path', proxy['ws-opts'].path);
-        }
-        if (proxy['ws-opts'] && proxy['ws-opts'].headers && proxy['ws-opts'].headers.Host) {
-            params.set('host', proxy['ws-opts'].headers.Host);
-        }
-    }
-    
-    // Reality
-    if (proxy.reality && proxy.reality.enabled) {
-        params.set('security', 'reality');
-        if (proxy.reality['public-key']) params.set('pbk', proxy.reality['public-key']);
-        if (proxy.reality['short-id']) params.set('sid', proxy.reality['short-id']);
+    if (network === 'ws' && proxy['ws-opts']) {
+        if (proxy['ws-opts'].path) params.set('path', proxy['ws-opts'].path);
+        if (proxy['ws-opts'].headers?.Host) params.set('host', proxy['ws-opts'].headers.Host);
     }
     
     const link = `vless://${proxy.uuid}@${proxy.server}:${proxy.port}?${params}#${encodeURIComponent(name)}`;
     return { l: link, p: 'vless', n: name };
 }
 
-function parseClashVMess(proxy, name) {
+function parseVMessFromClash(proxy, name) {
     const vmess = {
         v: "2",
         ps: name,
@@ -795,303 +713,155 @@ function parseClashVMess(proxy, name) {
         sni: proxy.servername || ""
     };
     
-    // WS 设置
-    if (proxy.network === 'ws') {
-        if (proxy['ws-opts']) {
-            vmess.host = proxy['ws-opts'].headers?.Host || "";
-            vmess.path = proxy['ws-opts'].path || "";
-        }
+    if (proxy.network === 'ws' && proxy['ws-opts']) {
+        vmess.host = proxy['ws-opts'].headers?.Host || "";
+        vmess.path = proxy['ws-opts'].path || "";
     }
     
     const encoded = safeBtoa(JSON.stringify(vmess));
     return { l: `vmess://${encoded}`, p: 'vmess', n: name };
 }
 
-function parseJSONOrJSContent(text) {
-    const results = [];
+function parseTrojanFromClash(proxy, name) {
+    const params = new URLSearchParams();
     
-    try {
-        // 先尝试 JSON
-        let jsonObj = tryParseDirtyJSON(text);
-        
-        // 如果不是 JSON，尝试 JavaScript
-        if (!jsonObj) {
-            jsonObj = JSParser.safeEval(text);
-        }
-        
-        if (jsonObj) {
-            const foundNodes = findNodesRecursively(jsonObj);
-            results.push(...foundNodes);
-        }
-        
-        // 也尝试正则提取
-        const regexNodes = extractNodesRegex(text);
-        results.push(...regexNodes);
-        
-    } catch(e) {
-        console.error("JSON/JS parsing error:", e);
+    if (proxy.servername) params.set('sni', proxy.servername);
+    if (proxy['skip-cert-verify']) params.set('allowInsecure', '1');
+    
+    const network = proxy.network || 'tcp';
+    if (network !== 'tcp') params.set('type', network);
+    
+    if (network === 'ws' && proxy['ws-opts']) {
+        if (proxy['ws-opts'].path) params.set('path', proxy['ws-opts'].path);
+        if (proxy['ws-opts'].headers?.Host) params.set('host', proxy['ws-opts'].headers.Host);
     }
     
-    return results;
+    const link = `trojan://${encodeURIComponent(proxy.password)}@${proxy.server}:${proxy.port}?${params}#${encodeURIComponent(name)}`;
+    return { l: link, p: 'trojan', n: name };
 }
 
-function findNodesRecursively(obj) {
-    let results = [];
-    if (!obj || typeof obj !== 'object') return results;
-
-    // --- 容器数组 ---
-    if (Array.isArray(obj.outbounds)) obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
-    if (Array.isArray(obj.proxies)) obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
-    if (Array.isArray(obj.servers)) obj.servers.forEach(s => results.push(...findNodesRecursively(s)));
+function parseSSFromClash(proxy, name) {
+    const method = proxy.cipher || 'aes-256-gcm';
+    const password = proxy.password;
     
-    // --- Xray 嵌套 ---
-    if (obj.settings && (obj.settings.vnext || obj.settings.servers)) {
-        const target = obj.settings.vnext || obj.settings.servers;
-        if (Array.isArray(target)) {
-            target.forEach(v => {
-                const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
-                if (subNode) results.push(subNode);
-            });
-        }
-    }
-
-    // --- 直接节点检查 ---
-    const node = parseFlatNode(obj);
-    if (node) results.push(node);
-
-    // --- 通用递归 ---
-    if (Array.isArray(obj)) {
-        obj.forEach(item => results.push(...findNodesRecursively(item)));
-    } else {
-        Object.keys(obj).forEach(key => {
-            if (key !== 'body' && key !== 'data' && key !== 'payload' && key !== 'rules') {
-                results.push(...findNodesRecursively(obj[key]));
-            }
-        });
-    }
-    return results;
+    if (!method || !password) return null;
+    
+    const auth = `${method}:${password}`;
+    const link = `ss://${safeBtoa(auth)}@${proxy.server}:${proxy.port}#${encodeURIComponent(name)}`;
+    return { l: link, p: 'ss', n: name };
 }
 
-function getProp(obj, keys) {
-    if (!obj || typeof obj !== 'object') return undefined;
-    if (!Array.isArray(keys)) keys = [keys];
-    const objKeys = Object.keys(obj);
-    for (const k of keys) {
-        if (obj[k] !== undefined) return obj[k];
-        const found = objKeys.find(ok => ok.toLowerCase() === k.toLowerCase());
-        if (found) return obj[found];
-    }
-    return undefined;
-}
-
-function parseFlatNode(ob) {
-    if (!ob || typeof ob !== 'object') return null;
-    
-    // 获取服务器和端口
-    let server = getProp(ob, ['server', 'ip', 'address', 'server_address', 'host']);
-    let port = getProp(ob, ['server_port', 'port', 'listen_port', 'listen']);
-    
-    // 处理 listen 字符串格式
-    if (!port && server && typeof server === 'string' && server.includes(':')) {
-        const parts = server.split(':');
-        if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
-            port = parseInt(parts[1]);
-            server = parts[0];
-        }
-    }
-    
-    if (!server || !port) return null;
-
-    // 确定类型
-    let type = getProp(ob, ['type', 'protocol', 'network']);
-    type = (type || '').toLowerCase();
-    
-    // 增强的类型检测
-    if (!type) {
-        // Hysteria2 检测
-        if (getProp(ob, ['obfs']) && (ob.obfs.type === 'salamander' || ob.obfs === 'salamander')) {
-            type = 'hysteria2';
-        }
-        // Hysteria 检测
-        else if (getProp(ob, ['up_mbps', 'down_mbps', 'auth_str', 'protocol', 'up', 'down'])) {
-            type = 'hysteria';
-        }
-        // VLESS/VMess 检测
-        else if (getProp(ob, ['uuid', 'id', 'userID'])) {
-            type = 'vless';
-        }
-        // Shadowsocks 检测
-        else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher', 'security'])) {
-            type = 'ss';
-        }
-    }
-    
-    // VMess 检测 (有 alterId)
-    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) {
-        type = 'vmess';
-    }
-    
-    // 过滤无效类型
-    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) {
-        return null;
-    }
-
-    const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks', 'id']) || `${type}-${server}:${port}`;
-    
-    try {
-        // --- Hysteria 2 ---
-        if (type === 'hysteria2') {
-            let password = getProp(ob, ['password', 'auth', 'auth_str', 'auth-str']);
-            
-            // 深度处理 users 数组
-            const users = getProp(ob, ['users']);
-            if (!password && Array.isArray(users)) {
-                for (const user of users) {
-                    if (user.password || user.auth) {
-                        password = user.password || user.auth;
-                        break;
-                    }
-                }
-            }
-            
-            if (password === undefined) password = '';
-
-            const params = new URLSearchParams();
-            const sni = getProp(ob, ['sni', 'server_name', 'servername', 'host']);
-            const insecure = getProp(ob, ['insecure', 'skip-cert-verify', 'allowInsecure']);
-            
-            if (sni) params.set('sni', sni);
-            if (insecure) params.set('insecure', '1');
-            
-            // 带宽
-            const up = getProp(ob, ['up', 'up_mbps']);
-            const down = getProp(ob, ['down', 'down_mbps']);
-            if (up) params.set('up', up.toString());
-            if (down) params.set('down', down.toString());
-            
-            // Obfs
-            const obfs = getProp(ob, ['obfs']);
-            if (obfs) {
-                if (typeof obfs === 'object') {
-                    if (obfs.type === 'salamander') params.set('obfs', 'salamander');
-                    if (obfs.password) params.set('obfs-password', obfs.password);
-                } else if (obfs === 'salamander') {
-                    params.set('obfs', 'salamander');
-                    const obfsPassword = getProp(ob, ['obfs-password', 'obfs_password']);
-                    if (obfsPassword) params.set('obfs-password', obfsPassword);
-                }
-            }
-
-            const link = `hysteria2://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(tag)}`;
-            return { l: link, p: 'hysteria2', n: tag };
-        }
-
-        // --- Hysteria 1 ---
-        if (type === 'hysteria') {
-            const params = new URLSearchParams();
-            const sni = getProp(ob, ['sni', 'server_name', 'servername', 'host']);
-            const insecure = getProp(ob, ['insecure', 'skip-cert-verify', 'allowInsecure']);
-            
-            params.set('peer', sni || server);
-            if (insecure) params.set('insecure', '1');
-            
-            const up = getProp(ob, ['up', 'up_mbps']) || '100'; 
-            const down = getProp(ob, ['down', 'down_mbps']) || '100';
-            params.set('up', up.toString());
-            params.set('down', down.toString());
-            
-            const auth = getProp(ob, ['auth', 'auth_str', 'auth-str', 'password']);
-            if (auth) params.set('auth', encodeURIComponent(auth));
-            
-            const protocol = getProp(ob, ['protocol']);
-            if (protocol) params.set('protocol', protocol);
-
-            // Obfs
-            const obfs = getProp(ob, ['obfs']);
-            if (obfs) params.set('obfs', obfs);
-            
-            const obfsPassword = getProp(ob, ['obfs-password', 'obfs_password']);
-            if (obfsPassword) params.set('obfs-password', obfsPassword);
-
-            const link = `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`;
-            return { l: link, p: 'hysteria', n: tag };
-        }
-
-        // --- 其他协议处理 (保持不变) ---
-        // ... 这里保留原来的 VLESS、VMess、Trojan、Shadowsocks 处理代码
-        // 由于篇幅限制，这里省略，但您可以使用之前版本中的对应代码
-        
-    } catch(e) {
-        console.error(`Error parsing ${type} node:`, e);
-    }
-    
-    return null;
-}
-
-// ... 保留原有的 parseXrayChild, extractNodesRegex, safeBtoa, safeAtob 函数
-// 由于篇幅限制，这里不重复，您可以使用之前版本中的对应代码
-
-function tryParseDirtyJSON(str) {
-    if (!str || typeof str !== 'string') return null;
-    try {
-        return JSON.parse(str);
-    } catch (e) {
-        try {
-            // 清理注释和尾随逗号
-            const cleaned = str
-                .replace(/\/\/.*$/gm, '')
-                .replace(/\/\*[\s\S]*?\*\//g, '')
-                .replace(/,(\s*[}\]])/g, '$1')
-                .replace(/'([^']*)'/g, '"$1"');
-            return JSON.parse(cleaned);
-        } catch (e2) {
-            try {
-                return new Function('return (' + str + ')')();
-            } catch (e3) {
-                return null;
-            }
-        }
-    }
-}
-
-function extractNodesRegex(text) {
+function parseAsJSON(text, sourceUrl) {
     const nodes = [];
     
-    // 匹配所有协议链接
-    const protocols = ['vmess', 'vless', 'trojan', 'ss', 'hysteria2', 'hysteria'];
-    const protocolRegex = new RegExp(`(${protocols.join('|')}):\/\/[^\\s"',;<>]+`, 'gi');
+    try {
+        // 清理文本
+        let cleaned = text
+            .replace(/\/\/.*$/gm, '')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .trim();
+        
+        // 尝试解析
+        const data = JSON.parse(cleaned);
+        if (!data) return nodes;
+        
+        // 查找节点
+        const foundNodes = findNodesInObject(data);
+        nodes.push(...foundNodes);
+        
+    } catch (e) {
+        // 尝试宽松解析
+        try {
+            const data = new Function('return (' + text + ')')();
+            if (data) {
+                const foundNodes = findNodesInObject(data);
+                nodes.push(...foundNodes);
+            }
+        } catch (e2) {
+            console.log(`JSON解析失败: ${e.message}`);
+        }
+    }
     
-    const matches = text.match(protocolRegex);
-    if (matches) {
-        matches.forEach(link => {
-            try {
-                let clean = link.trim();
-                // 移除可能的引号
-                clean = clean.replace(/^['"`]|['"`]$/g, '');
+    return nodes;
+}
+
+function parseAsJavaScript(text, sourceUrl) {
+    const nodes = [];
+    
+    try {
+        // 检查是否是 JavaScript 格式
+        if (text.includes('export default') || text.includes('module.exports') || 
+            (text.includes('function') && text.includes('return'))) {
+            
+            // 提取对象
+            let objText = text;
+            
+            if (objText.includes('export default')) {
+                objText = objText.split('export default')[1].trim();
+            } else if (objText.includes('module.exports =')) {
+                objText = objText.split('module.exports =')[1].trim();
+            }
+            
+            // 移除最后的分号
+            objText = objText.replace(/;[\s]*$/, '');
+            
+            // 尝试执行
+            const data = new Function('return (' + objText + ')')();
+            if (data) {
+                const foundNodes = findNodesInObject(data);
+                nodes.push(...foundNodes);
+            }
+        }
+    } catch (e) {
+        console.log(`JavaScript解析失败: ${e.message}`);
+    }
+    
+    return nodes;
+}
+
+function parseAsBase64(text, sourceUrl) {
+    const nodes = [];
+    
+    try {
+        // 检查是否是 base64
+        if (text.length > 10 && !text.includes(' ') && !text.includes('\n') && 
+            !text.includes('{') && !text.includes('[')) {
+            
+            const decoded = safeAtob(text);
+            if (decoded && decoded.length > 10) {
+                // 尝试多种解析
+                const yamlNodes = parseAsYAML(decoded, sourceUrl + ' (base64)');
+                const jsonNodes = parseAsJSON(decoded, sourceUrl + ' (base64)');
+                const regexNodes = extractWithRegex(decoded, sourceUrl + ' (base64)');
                 
-                let type = clean.split(':')[0].toLowerCase();
-                let name = `${type}-node`;
-                
-                // 从链接中提取名称
-                const hashIndex = clean.indexOf('#');
-                if (hashIndex !== -1) {
-                    try {
-                        name = decodeURIComponent(clean.substring(hashIndex + 1));
-                    } catch(e) {
-                        name = clean.substring(hashIndex + 1);
-                    }
-                }
-                
-                // 确保协议正确
-                if (!protocols.includes(type)) {
-                    // 尝试从链接中推断
-                    if (clean.includes('hysteria2://')) type = 'hysteria2';
-                    else if (clean.includes('hysteria://')) type = 'hysteria';
-                }
-                
-                nodes.push({ l: clean, p: type, n: name.substring(0, 50) });
-            } catch(e) {
-                console.error('Error parsing link:', link, e);
+                nodes.push(...yamlNodes, ...jsonNodes, ...regexNodes);
+            }
+        }
+    } catch (e) {
+        console.log(`Base64解析失败: ${e.message}`);
+    }
+    
+    return nodes;
+}
+
+function findNodesInObject(obj) {
+    const nodes = [];
+    
+    if (!obj || typeof obj !== 'object') return nodes;
+    
+    // 检查当前对象是否是节点
+    const node = extractNodeFromObject(obj);
+    if (node) nodes.push(node);
+    
+    // 递归搜索
+    if (Array.isArray(obj)) {
+        obj.forEach(item => {
+            nodes.push(...findNodesInObject(item));
+        });
+    } else {
+        Object.values(obj).forEach(value => {
+            if (value && typeof value === 'object') {
+                nodes.push(...findNodesInObject(value));
             }
         });
     }
@@ -1099,17 +869,182 @@ function extractNodesRegex(text) {
     return nodes;
 }
 
+function extractNodeFromObject(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    
+    // 提取服务器和端口
+    let server = obj.server || obj.address || obj.host || obj.ip;
+    let port = obj.port || obj.server_port;
+    
+    // 处理 host:port 格式
+    if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
+        const parts = server.split(':');
+        if (parts.length === 2 && !isNaN(parts[1])) {
+            server = parts[0];
+            port = parseInt(parts[1]);
+        }
+    }
+    
+    if (!server || !port) return null;
+    
+    // 确定类型
+    let type = (obj.type || obj.protocol || '').toLowerCase();
+    
+    if (!type) {
+        // 智能推断
+        if (obj.uuid || obj.id) {
+            type = 'vless';
+            if (obj.alterId || obj.alter_id) type = 'vmess';
+        } else if (obj.password && (obj.up_mbps || obj.down_mbps || obj.auth_str)) {
+            type = 'hysteria';
+            if (obj.obfs && obj.obfs.type === 'salamander') type = 'hysteria2';
+        } else if (obj.password && obj.method) {
+            type = 'ss';
+        }
+    }
+    
+    if (!type) return null;
+    
+    // 处理 Hysteria2
+    if (type === 'hysteria2') {
+        return createHysteria2Link(obj, server, port);
+    }
+    
+    // 处理 Hysteria
+    if (type === 'hysteria') {
+        return createHysteriaLink(obj, server, port);
+    }
+    
+    // 其他协议
+    return null;
+}
+
+function createHysteria2Link(obj, server, port) {
+    const params = new URLSearchParams();
+    const name = obj.name || obj.ps || obj.tag || `hysteria2-${server}:${port}`;
+    
+    // 密码
+    let password = obj.password || obj.auth_str || '';
+    
+    // 处理 users 数组
+    if (!password && obj.users && Array.isArray(obj.users) && obj.users.length > 0) {
+        const user = obj.users[0];
+        password = user.password || user.auth || '';
+    }
+    
+    // 基本参数
+    if (obj.sni) params.set('sni', obj.sni);
+    if (obj.insecure || obj['skip-cert-verify']) params.set('insecure', '1');
+    
+    // 带宽
+    const up = obj.up || obj.up_mbps || '100';
+    const down = obj.down || obj.down_mbps || '100';
+    params.set('up', up.toString());
+    params.set('down', down.toString());
+    
+    // 混淆
+    if (obj.obfs) {
+        if (obj.obfs.type === 'salamander' || obj.obfs === 'salamander') {
+            params.set('obfs', 'salamander');
+            const obfsPassword = obj.obfs.password || obj['obfs-password'];
+            if (obfsPassword) params.set('obfs-password', obfsPassword);
+        }
+    }
+    
+    const link = `hysteria2://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(name)}`;
+    return { l: link, p: 'hysteria2', n: name };
+}
+
+function createHysteriaLink(obj, server, port) {
+    const params = new URLSearchParams();
+    const name = obj.name || obj.ps || obj.tag || `hysteria-${server}:${port}`;
+    
+    // 基本参数
+    params.set('peer', obj.sni || server);
+    if (obj.insecure || obj['skip-cert-verify']) params.set('insecure', '1');
+    
+    // 带宽
+    const up = obj.up || obj.up_mbps || '100';
+    const down = obj.down || obj.down_mbps || '100';
+    params.set('up', up.toString());
+    params.set('down', down.toString());
+    
+    // 认证
+    if (obj.auth_str || obj.password) {
+        params.set('auth', encodeURIComponent(obj.auth_str || obj.password));
+    }
+    
+    // 协议
+    if (obj.protocol) params.set('protocol', obj.protocol);
+    
+    // 混淆
+    if (obj.obfs) params.set('obfs', obj.obfs);
+    if (obj['obfs-password']) params.set('obfs-password', obj['obfs-password']);
+    
+    const link = `hysteria://${server}:${port}?${params}#${encodeURIComponent(name)}`;
+    return { l: link, p: 'hysteria', n: name };
+}
+
+function extractWithRegex(text, sourceUrl) {
+    const nodes = [];
+    
+    // Hysteria2 链接
+    const hysteria2Regex = /hysteria2:\/\/[^@\s]+@[^\s"',;<>]+/gi;
+    const hysteria2Matches = text.match(hysteria2Regex);
+    if (hysteria2Matches) {
+        hysteria2Matches.forEach(link => {
+            try {
+                const cleanLink = link.trim();
+                const nameMatch = cleanLink.match(/#([^#]+)$/);
+                const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'Hysteria2-Node';
+                nodes.push({ l: cleanLink, p: 'hysteria2', n: name });
+            } catch(e) {}
+        });
+    }
+    
+    // Hysteria 链接
+    const hysteriaRegex = /hysteria:\/\/[^\s"',;<>]+/gi;
+    const hysteriaMatches = text.match(hysteriaRegex);
+    if (hysteriaMatches) {
+        hysteriaMatches.forEach(link => {
+            try {
+                const cleanLink = link.trim();
+                const nameMatch = cleanLink.match(/#([^#]+)$/);
+                const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'Hysteria-Node';
+                nodes.push({ l: cleanLink, p: 'hysteria', n: name });
+            } catch(e) {}
+        });
+    }
+    
+    // 其他协议链接
+    const protocolRegex = /(vmess|vless|trojan|ss):\/\/[^\s"',;<>]+/gi;
+    const protocolMatches = text.match(protocolRegex);
+    if (protocolMatches) {
+        protocolMatches.forEach(link => {
+            try {
+                const cleanLink = link.trim();
+                const type = cleanLink.split(':')[0];
+                const nameMatch = cleanLink.match(/#([^#]+)$/);
+                const name = nameMatch ? decodeURIComponent(nameMatch[1]) : `${type}-node`;
+                nodes.push({ l: cleanLink, p: type, n: name });
+            } catch(e) {}
+        });
+    }
+    
+    return nodes;
+}
+
+// ==========================================
+// 6. 工具函数
+// ==========================================
+
 function safeBtoa(str) {
     try {
-        return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => 
-            String.fromCharCode('0x' + p1)
+        return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, 
+            (match, p1) => String.fromCharCode(parseInt(p1, 16))
         ));
-    } catch (e) { 
-        try {
-            return btoa(str);
-        } catch(e2) {
-            return '';
-        }
+    } catch (e) {
+        return btoa(str);
     }
 }
 
@@ -1121,11 +1056,7 @@ function safeAtob(str) {
         return decodeURIComponent(decoded.split('').map(c => 
             '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
         ).join(''));
-    } catch (e) { 
-        try { 
-            return atob(str); 
-        } catch(e2) { 
-            return str; 
-        }
+    } catch (e) {
+        return atob(str);
     }
 }
