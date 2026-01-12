@@ -1,0 +1,5 @@
+{
+  "name": "SubLink Aggregator",
+  "description": "专业的订阅聚合工具。支持从 Sing-box, Clash, Hysteria 等 URL 批量提取节点，分类并生成 Cloudflare Pages 订阅服务。",
+  "requestFramePermissions": []
+}
