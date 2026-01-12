@@ -1,11 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v7)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v8)
  * 
  * Update Log:
- * - CRITICAL FIX: Added `stripJsonComments` to handle Sing-box configs with // comments
- * - Fix: Deep recursion logic (don't stop early)
- * - Fix: Hysteria 2 obfs/password mapping
- * - Fix: VLESS flow (vision) support
+ * - CRITICAL FIX: Handle JSON trailing commas (Sing-box config fix)
+ * - CRITICAL FIX: Base64 -> JSON recursive strategy (Hidden node fix)
+ * - Fix: Hysteria 2 obfs param construction
+ * - Bot: Enhanced protocol statistics display
  */
 
 // ==========================================
@@ -195,30 +195,34 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源深度抓取节点 (Deep Scan Mode)...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan / JSON+Base64)...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
-            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但节点数为 0。\n可能原因：源站不可达或格式不兼容。`);
+            
+            // 详细统计
+            const stats = {};
+            nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
+            const statsStr = Object.entries(stats)
+                .map(([k, v]) => `• <b>${k.toUpperCase()}</b>: ${v}`)
+                .join('\n');
+
+            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 有效节点数为 0。\n请检查订阅源是否有效 (HTTP 200) 且格式正确。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
             const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             await env.KV.put('LAST_UPDATE', time);
             
-            const stats = {};
-            nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
-            const statsStr = Object.entries(stats).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
-
             await send(`✅ <b>更新成功</b>\n\n📊 <b>节点总数:</b> ${nodes.length}\n${statsStr}\n\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s\n🕒 时间: ${time}`);
         } catch (e) {
-            await send(`❌ <b>更新失败:</b> ${e.message}`);
+            await send(`❌ <b>更新失败:</b> ${e.message}\nStack: ${e.stack}`);
         }
 
     } else if (text.includes('系统状态')) {
         let count = 0;
         let last = "无";
-        let statsStr = "";
+        let statsStr = "暂无数据";
         
         if (env.KV) {
             const s = await env.KV.get('NODES');
@@ -227,31 +231,37 @@ async function handleTelegramCommand(message, env, origin) {
                 count = nodes.length;
                 const stats = {};
                 nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
-                statsStr = Object.entries(stats).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
+                statsStr = Object.entries(stats)
+                    .map(([k, v]) => `• <b>${k.toUpperCase()}</b>: ${v}`)
+                    .join('\n');
             }
             last = await env.KV.get('LAST_UPDATE') || "无";
         }
-        await send(`📊 <b>系统状态</b>\n\n🟢 <b>节点总数:</b> ${count}\n${statsStr}\n\n🕒 <b>上次更新:</b> ${last}`);
+        await send(`📊 <b>系统状态</b>\n\n🟢 <b>节点总数:</b> ${count}\n\n${statsStr}\n\n🕒 <b>上次更新:</b> ${last}`);
 
     } else if (text.includes('订阅链接')) {
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
         const msg = [
             `🔗 <b>订阅链接 (Subscription)</b>`,
-            `<code>${origin}/all</code>`,
             ``,
-            `<b>提示:</b> 支持 VLESS, Hysteria2, VMess 等主流协议。`
+            `🌍 <b>Universal:</b> <code>${origin}/all</code>`,
+            `🚀 <b>VLESS:</b> <code>${origin}/vless</code>`,
+            `⚡ <b>Hysteria2:</b> <code>${origin}/hysteria2</code>`,
+            `🐱 <b>Clash:</b> <code>${origin}/clash</code>`,
+            ``,
+            `<b>提示:</b> 使用 Universal 链接可包含所有协议。`
         ].join('\n');
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: V7 (JSON Fix)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v8 (Trailing Comma Fix)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v7 - JSON Fix)
+// 4. Ultimate Parser Logic (v8)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -262,7 +272,7 @@ async function fetchAndParseAll(urls) {
         const promises = batch.map(async (u) => {
             try {
                 const res = await fetch(u, { 
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
                     cf: { cacheTtl: 60 }
                 });
                 if (!res.ok) return;
@@ -271,19 +281,31 @@ async function fetchAndParseAll(urls) {
 
                 let foundInThisUrl = [];
 
-                // 1. Try to Parse JSON (Cleaned)
+                // Strategy 1: JSON Parse (Cleaned)
                 const json = tryParseJSON(text);
                 if (json) {
                     foundInThisUrl = findNodesRecursively(json);
                 }
 
-                // 2. If JSON failed or yielded nothing, try Regex/Base64
+                // Strategy 2: If JSON failed, try Base64 Decode -> JSON
                 if (foundInThisUrl.length === 0) {
-                    let decoded = text;
-                    if (!text.includes(' ') && !text.includes('\n') && text.length > 20) {
-                        try { decoded = safeAtob(text); } catch(e) {}
-                    }
-                    foundInThisUrl = extractNodesRegex(decoded);
+                     // Try decoding base64
+                     if (!text.includes(' ') && !text.includes('\n')) {
+                         try {
+                             const decoded = safeAtob(text);
+                             // Recursive: try parsing the decoded text as JSON
+                             const jsonDecoded = tryParseJSON(decoded);
+                             if (jsonDecoded) {
+                                 foundInThisUrl = findNodesRecursively(jsonDecoded);
+                             } else {
+                                 // Strategy 3: Regex on Decoded Text
+                                 foundInThisUrl = extractNodesRegex(decoded);
+                             }
+                         } catch(e) {}
+                     } else {
+                         // Strategy 4: Regex on Raw Text
+                         foundInThisUrl = extractNodesRegex(text);
+                     }
                 }
 
                 nodes.push(...foundInThisUrl);
@@ -300,14 +322,18 @@ async function fetchAndParseAll(urls) {
     return Array.from(unique.values());
 }
 
-// Safe JSON parser that strips comments
+// Robust JSON Parser: Strips comments //, /**/ AND Trailing Commas
 function tryParseJSON(str) {
+    if (!str || typeof str !== 'string') return null;
     try {
         return JSON.parse(str);
     } catch (e) {
         try {
-            // Strip // and /* */ comments
-            const clean = str.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
+            // 1. Strip comments
+            let clean = str.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
+            // 2. Strip trailing commas (e.g. ` "a": 1, }` -> ` "a": 1 }`)
+            // Matches a comma, followed by optional whitespace, followed by } or ]
+            clean = clean.replace(/,(\s*[}\]])/g, '$1');
             return JSON.parse(clean);
         } catch (e2) {
             return null;
@@ -320,15 +346,10 @@ function findNodesRecursively(obj) {
     if (!obj || typeof obj !== 'object') return results;
 
     // --- Container Arrays ---
-    // We do NOT return early anymore, we check everything.
-    if (Array.isArray(obj.outbounds)) {
-        obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
-    }
-    if (Array.isArray(obj.proxies)) {
-        obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
-    }
+    if (Array.isArray(obj.outbounds)) obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
+    if (Array.isArray(obj.proxies)) obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
     
-    // --- Xray/V2Ray Nested ---
+    // --- Xray Nested ---
     if (obj.settings && (obj.settings.vnext || obj.settings.servers)) {
         const target = obj.settings.vnext || obj.settings.servers;
         if (Array.isArray(target)) {
@@ -341,23 +362,16 @@ function findNodesRecursively(obj) {
 
     // --- Direct Node Check ---
     const node = parseFlatNode(obj);
-    if (node) {
-        results.push(node);
-        // Don't stop recursion even if found, though usually leaf nodes don't have children
-    }
+    if (node) results.push(node);
 
     // --- General Recursion ---
     if (Array.isArray(obj)) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
         Object.keys(obj).forEach(key => {
-            // Skip huge string fields to save CPU
-            if (key !== 'body' && key !== 'data') {
-                 results.push(...findNodesRecursively(obj[key]));
-            }
+            if (key !== 'body' && key !== 'data') results.push(...findNodesRecursively(obj[key]));
         });
     }
-    
     return results;
 }
 
@@ -398,16 +412,13 @@ function parseFlatNode(ob) {
     }
 
     if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
-
     if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
 
     const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
     const uuid = getProp(ob, ['uuid', 'id', 'user_id']);
-    
     const tlsObj = getProp(ob, ['tls']) || {};
     const isTls = tlsObj === true || tlsObj.enabled === true || getProp(ob, ['tls']) === true;
     const sni = getProp(tlsObj, ['server_name', 'sni']) || getProp(ob, ['sni', 'servername', 'host']);
-    // Hysteria2 sometimes uses ignore_insecure
     const insecure = (getProp(tlsObj, ['insecure', 'ignore_insecure']) || getProp(ob, ['insecure', 'skip-cert-verify'])) ? '1' : '0';
     
     try {
@@ -418,7 +429,7 @@ function parseFlatNode(ob) {
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('insecure', '1');
             
-            // Singbox obfs
+            // Singbox obfs mapping
             const obfs = getProp(ob, ['obfs']);
             if (obfs && typeof obfs === 'object') {
                  if (obfs.type === 'salamander') params.set('obfs', 'salamander');
@@ -464,14 +475,12 @@ function parseFlatNode(ob) {
             
             const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host || sni;
             const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
-            
             if (host) params.set('host', host);
             if (path) params.set('path', path);
             
             const serviceName = getProp(transport, ['service_name']) || getProp(ob, ['serviceName', 'grpc-service-name']);
             if (serviceName) params.set('serviceName', serviceName);
             
-            // Vision / Flow
             const flow = getProp(ob, ['flow']);
             if (flow) params.set('flow', flow);
 
@@ -506,7 +515,6 @@ function parseFlatNode(ob) {
             if (network === 'grpc') {
                 vmess.path = getProp(transport, ['service_name']) || ""; 
             }
-            
             return { l: `vmess://${safeBtoa(JSON.stringify(vmess))}`, p: 'vmess', n: tag };
         }
         
@@ -551,7 +559,6 @@ function parseXrayChild(protocol, vChild, streamSettings) {
         node.alter_id = u.alterId;
         node.method = u.method;
     }
-    // StreamSettings mapping
     if (streamSettings) {
         node.network = streamSettings.network;
         if (streamSettings.security === 'tls') {
