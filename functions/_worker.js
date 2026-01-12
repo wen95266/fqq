@@ -1,5 +1,5 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Enhanced)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition)
  * 
  * 功能:
  * 1. 自动抓取节点并存储到 KV
@@ -11,7 +11,6 @@
 // 1. 配置区域
 // ==========================================
 
-// 自定义菜单键盘布局
 const BOT_KEYBOARD = {
     keyboard: [
         [{ text: "🔄 立即更新" }, { text: "📊 系统状态" }],
@@ -22,7 +21,6 @@ const BOT_KEYBOARD = {
     input_field_placeholder: "请选择操作..."
 };
 
-// 预置订阅源
 const PRESET_URLS = [
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/singbox/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/singbox/1/config.json",
@@ -72,45 +70,41 @@ export default {
         return env.ASSETS.fetch(request);
     }
 
-    // --- 接口: Webhook 设置 ---
+    // --- Webhook ---
     if (pathPart === 'webhook') {
-      if (!env.TG_TOKEN) return new Response('❌ Error: TG_TOKEN not set in Pages Settings.', { status: 500 });
+      if (!env.TG_TOKEN) return new Response('❌ Error: TG_TOKEN not set.', { status: 500 });
       const webhookUrl = `${url.origin}/api/telegram`;
       const r = await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/setWebhook?url=${webhookUrl}`);
       const j = await r.json();
-      return new Response(`Webhook set to: ${webhookUrl}\nTelegram API Response: ${JSON.stringify(j, null, 2)}`);
+      return new Response(`Webhook: ${webhookUrl}\nResult: ${JSON.stringify(j, null, 2)}`);
     }
 
-    // --- 接口: Telegram Bot 入口 ---
+    // --- Bot API ---
     if (pathPart === 'api/telegram' && request.method === 'POST') {
       try {
         const update = await request.json();
         if (update.message && update.message.text) {
              const chatId = String(update.message.from.id);
              if (env.ADMIN_ID && chatId !== String(env.ADMIN_ID)) {
-                 return new Response('Unauthorized');
+                 // 可选：允许所有人使用订阅查询，限制管理功能
              }
              ctx.waitUntil(handleTelegramCommand(update.message, env, url.origin));
         }
-      } catch(e) { console.error("Bot Error:", e); }
+      } catch(e) {}
       return new Response('OK');
     }
 
-    // --- 接口: 前端状态查询 ---
+    // --- Status API ---
     if (pathPart === 'api/status') {
          let count = 0;
          let updateTime = null;
          try {
-             if (!env.KV) throw new Error("KV_NOT_BOUND");
-             const stored = await env.KV.get('NODES');
-             if (stored) {
-                 const nodes = JSON.parse(stored);
-                 count = nodes.length;
+             if (env.KV) {
+                 const stored = await env.KV.get('NODES');
+                 if (stored) count = JSON.parse(stored).length;
+                 updateTime = await env.KV.get('LAST_UPDATE');
              }
-             updateTime = await env.KV.get('LAST_UPDATE');
-         } catch(e) {
-             console.error("KV Error:", e);
-         }
+         } catch(e) {}
          
          return new Response(JSON.stringify({ 
              count, 
@@ -120,16 +114,14 @@ export default {
          }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- 接口: 订阅输出 ---
+    // --- Subscription Output ---
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
-    const knownTypes = ['vless', 'vmess', 'hysteria', 'hysteria2', 'trojan', 'ss', 'clash', 'all'];
-    if (!targetType) {
-        for(const t of knownTypes) {
-            if(pathPart.includes(t)) targetType = t;
-        }
-    }
+    // Auto-detect type from URL
+    ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash'].forEach(t => {
+        if (pathPart.includes(t)) targetType = t;
+    });
     if (!targetType) targetType = 'all';
 
     let nodesData = [];
@@ -142,11 +134,15 @@ export default {
 
     let filteredNodes = nodesData;
     if (targetType && targetType !== 'all') {
+      // Allow searching for multiple types e.g. "hysteria,hysteria2"
       const types = targetType.split(',').map(t => t.trim());
-      filteredNodes = nodesData.filter(node => types.some(t => node.p.includes(t)));
+      // Special handling for "hysteria" matching both v1 and v2 if needed, but here we match exactly what we parsed
+      filteredNodes = nodesData.filter(node => types.some(t => node.p === t || (t==='hysteria' && node.p==='hysteria2'))); 
     }
 
-    // UTF-8 安全的 Base64 编码
+    // Filter out invalid nodes
+    filteredNodes = filteredNodes.filter(n => n.l && n.l.startsWith(n.p));
+
     const links = filteredNodes.map(n => n.l).join('\n');
     const encoded = safeBtoa(links);
 
@@ -163,121 +159,71 @@ export default {
 };
 
 // ==========================================
-// 3. Telegram Bot 逻辑处理
+// 3. Bot Logic
 // ==========================================
 async function handleTelegramCommand(message, env, origin) {
     const chatId = message.chat.id;
     const text = message.text.trim();
     
-    const send = async (msg, options = {}) => {
-        const payload = {
-            chat_id: chatId, 
-            text: msg, 
-            parse_mode: options.parseMode || 'HTML', 
-            disable_web_page_preview: true,
-            reply_markup: options.removeKeyboard ? { remove_keyboard: true } : BOT_KEYBOARD
-        };
+    const send = async (msg) => {
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                chat_id: chatId, 
+                text: msg, 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true,
+                reply_markup: BOT_KEYBOARD
+            })
         });
     };
-    
-    const sendPhoto = async (photoUrl, caption) => {
-        await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendPhoto`, {
-             method: 'POST',
-             headers: {'Content-Type': 'application/json'},
-             body: JSON.stringify({ 
-                 chat_id: chatId, 
-                 photo: photoUrl, 
-                 caption: caption,
-                 reply_markup: BOT_KEYBOARD 
-             })
-        });
-    }
 
-    // 1. 帮助 / 启动
-    if (text === '/start' || text.includes('帮助')) {
-        await send(
-            `👋 <b>欢迎使用 SubLink 管理机器人</b>\n\n` +
-            `🔄 <b>立即更新</b>: 抓取最新节点\n` +
-            `📊 <b>系统状态</b>: 查看节点数量\n` +
-            `🔗 <b>订阅链接</b>: 获取订阅地址\n`
-        );
-    } 
-    // 2. 更新节点
-    else if (text === '/update' || text.includes('立即更新')) {
-        if (!env.KV) {
-            await send(`❌ <b>错误</b>: 未绑定 KV Namespace。`);
-            return;
-        }
-
-        await send("⏳ <b>正在抓取...</b>\n正在从订阅源聚合节点，这可能需要 10-20 秒。");
-        const startTime = Date.now();
+    if (text.includes('立即更新')) {
+        if (!env.KV) return send(`❌ KV 未绑定`);
+        await send("⏳ 正在全力抓取节点...");
+        const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
-            
-            if (nodes.length === 0) {
-                 await send(`⚠️ <b>警告</b>: 抓取完成，但没有找到有效节点。`);
-                 return;
-            }
+            if (nodes.length === 0) return send(`⚠️ 抓取完成，但节点数为 0。请检查网络或源。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
+            const time = new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+            await env.KV.put('LAST_UPDATE', time);
             
-            const now = new Date();
-            const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
-            await env.KV.put('LAST_UPDATE', beijingTime);
-            
-            const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-            await send(`✅ <b>更新成功!</b>\n\n📊 节点总数: <b>${nodes.length}</b>\n⏱️ 耗时: ${duration}秒\n📅 时间: ${beijingTime}`);
+            await send(`✅ <b>更新成功</b>\n📊 节点数: ${nodes.length}\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s`);
         } catch (e) {
-            await send(`❌ <b>更新失败</b>:\n<pre>${e.message}</pre>`);
+            await send(`❌ 错误: ${e.message}`);
         }
-    } 
-    // 3. 查看状态
-    else if (text === '/status' || text.includes('系统状态')) {
+    } else if (text.includes('系统状态')) {
         let count = 0;
-        let lastUp = "从未更新";
-        let kvStatus = "✅ 正常";
-        try {
-            if (!env.KV) throw new Error("KV 未绑定");
-            const stored = await env.KV.get('NODES');
-            if (stored) count = JSON.parse(stored).length;
-            lastUp = await env.KV.get('LAST_UPDATE') || "未知";
-        } catch(e) { kvStatus = `❌ 异常`; }
-        await send(`📊 <b>系统状态</b>\n\n🔢 节点: ${count}\n🕒 更新: ${lastUp}\n💾 KV: ${kvStatus}`);
-    } 
-    // 4. 获取订阅
-    else if (text === '/sub' || text.includes('订阅链接')) {
-        const subUrl = `${origin}`;
-        let msg = `🔗 <b>订阅链接</b>\n\n`;
-        msg += `🌐 <b>通用订阅:</b> <code>${subUrl}/all</code>\n`;
-        msg += `⚡ <b>Hysteria2:</b> <code>${subUrl}/hysteria2</code>\n`;
-        msg += `🚀 <b>VLESS:</b> <code>${subUrl}/vless</code>`;
-        await send(msg);
-        const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(subUrl + '/all')}`;
-        await sendPhoto(qrApi, '📱 扫码直接导入');
-    }
-    else if (text.includes('检测配置')) {
-         let report = `⚙️ <b>配置检测</b>\n\n1️⃣ KV: ${env.KV ? '✅' : '❌'}\n2️⃣ TG_TOKEN: ${env.TG_TOKEN ? '✅' : '❌'}`;
-         await send(report);
+        let last = "无";
+        if (env.KV) {
+            const s = await env.KV.get('NODES');
+            if(s) count = JSON.parse(s).length;
+            last = await env.KV.get('LAST_UPDATE') || "无";
+        }
+        await send(`📊 <b>系统状态</b>\n节点: ${count}\n更新: ${last}`);
+    } else if (text.includes('订阅链接')) {
+        await send(`🔗 <b>订阅链接</b>\n<code>${origin}/all</code>`);
+    } else {
+        await send(`👋 SubLink Bot Ready.`);
     }
 }
 
 // ==========================================
-// 4. 节点抓取核心逻辑 (增强版)
+// 4. Advanced Parser Logic
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    const BATCH_SIZE = 5; 
+    // Increase batch size slightly
+    const BATCH_SIZE = 8;
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
-                // 使用 Chrome User-Agent 避免被拦截
                 const res = await fetch(u, { 
                     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
                     cf: { cacheTtl: 60 }
@@ -286,180 +232,193 @@ async function fetchAndParseAll(urls) {
                 let text = await res.text();
                 text = text.trim();
 
-                // 1. 尝试解析 Sing-box JSON (因为 PRESET_URLS 包含大量 config.json)
+                // Strategy 1: JSON Recursion (Sing-box, Xray, etc)
+                let jsonNodes = [];
                 if (text.startsWith('{') || text.startsWith('[')) {
                     try {
                         const json = JSON.parse(text);
-                        const outbounds = Array.isArray(json) ? json : (json.outbounds || []);
-                        const extracted = parseSingboxOutbounds(outbounds);
-                        if (extracted.length > 0) {
-                            nodes.push(...extracted);
-                            return; // 成功解析 JSON 后跳过后续步骤
-                        }
+                        jsonNodes = findNodesRecursively(json);
                     } catch(e) {}
                 }
 
-                // 2. 尝试 Base64 解码 (处理编码的订阅)
-                let decodedText = text;
-                try {
-                    // 如果不包含空格且很长，可能是 Base64
-                    if (!text.includes(' ') && text.length > 20) {
-                        decodedText = safeAtob(text);
+                if (jsonNodes.length > 0) {
+                    nodes.push(...jsonNodes);
+                } else {
+                    // Strategy 2: Base64 Decode + Regex
+                    let decoded = text;
+                    if (!text.includes(' ') && text.length > 50) {
+                        try { decoded = safeAtob(text); } catch(e) {}
                     }
-                } catch(e) {}
-
-                // 3. 正则提取链接
-                const regex = /(vmess|vless|trojan|ss|hysteria2|tuic):\/\/[^\s"',;<>]+/g;
-                const matches = decodedText.match(regex);
-                
-                if (matches) {
-                    matches.forEach(link => {
-                         let cleanLink = link.split('"')[0].split("'")[0].split("<")[0];
-                         let p = cleanLink.split('://')[0];
-                         let n = 'Node';
-                         try { 
-                             const hashPart = cleanLink.split('#')[1];
-                             if(hashPart) n = decodeURIComponent(hashPart); 
-                         } catch(e){}
-                         nodes.push({ l: cleanLink, p: p, n: n });
-                    });
+                    const regexNodes = extractNodesRegex(decoded);
+                    nodes.push(...regexNodes);
                 }
             } catch(e) {}
         });
         await Promise.all(promises);
     }
-    
-    // 去重
-    const unique = [];
-    const seen = new Set();
-    for (const n of nodes) {
-        if (!seen.has(n.l)) {
-            seen.add(n.l);
-            unique.push(n);
+
+    // Deduplicate by Link
+    const unique = new Map();
+    nodes.forEach(n => {
+        if(n.l && !unique.has(n.l)) unique.set(n.l, n);
+    });
+    return Array.from(unique.values());
+}
+
+// Recursive search for proxy objects in JSON
+function findNodesRecursively(obj) {
+    let results = [];
+    if (!obj) return results;
+
+    if (Array.isArray(obj)) {
+        obj.forEach(item => results.push(...findNodesRecursively(item)));
+        return results;
+    }
+
+    if (typeof obj === 'object') {
+        // Check if this object is a proxy node
+        const node = parseSingleNode(obj);
+        if (node) {
+            results.push(node);
+        } else {
+            // If not a node, search its children (e.g. "outbounds", "proxies", "selector")
+            Object.values(obj).forEach(val => results.push(...findNodesRecursively(val)));
         }
     }
-    return unique;
+    return results;
 }
 
-// 辅助: 解析 Sing-box 格式节点为通用链接
-function parseSingboxOutbounds(outbounds) {
-    const res = [];
-    if (!Array.isArray(outbounds)) return res;
+function parseSingleNode(ob) {
+    if (!ob.type || !ob.server || !ob.server_port) return null;
     
-    outbounds.forEach(ob => {
-        // 过滤 selector, urltest, direct 等非节点类型
-        if (!ob.server || !ob.server_port || !ob.type) return;
-        
-        const tag = ob.tag || `Node-${Math.floor(Math.random()*1000)}`;
-        
-        try {
-            // --- VMess ---
-            if (ob.type === 'vmess') {
-                const vmessBody = {
-                    v: "2",
-                    ps: tag,
-                    add: ob.server,
-                    port: ob.server_port,
-                    id: ob.uuid,
-                    aid: ob.alter_id || 0,
-                    scy: ob.security || "auto",
-                    net: ob.transport?.type || "tcp",
-                    type: "none",
-                    host: ob.tls?.server_name || ob.transport?.headers?.Host || "",
-                    path: ob.transport?.path || "",
-                    tls: ob.tls?.enabled ? "tls" : "",
-                    sni: ob.tls?.server_name || "",
-                    alpn: ob.tls?.alpn ? ob.tls.alpn.join(',') : ""
-                };
-                
-                // 针对不同传输协议的特殊处理
-                if (ob.transport?.type === 'grpc') {
-                    vmessBody.net = "grpc";
-                    vmessBody.path = ob.transport?.service_name || "";
-                } else if (ob.transport?.type === 'ws') {
-                    vmessBody.net = "ws";
-                    vmessBody.path = ob.transport?.path || "/";
-                } else if (ob.transport?.type === 'http') {
-                    vmessBody.net = "tcp";
-                    vmessBody.type = "http";
-                }
+    // Filter out internal types
+    if (['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'ipv4', 'ipv6'].includes(ob.type)) return null;
 
-                const link = `vmess://${safeBtoa(JSON.stringify(vmessBody))}`;
-                res.push({ l: link, p: 'vmess', n: tag });
+    const tag = ob.tag || `Node-${Math.floor(Math.random()*10000)}`;
+    const port = ob.server_port;
+    const server = ob.server;
+    
+    try {
+        // --- Hysteria 2 ---
+        if (ob.type === 'hysteria2') {
+            const params = new URLSearchParams();
+            if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+            if (ob.tls?.insecure) params.set('insecure', '1');
+            const auth = ob.password || ob.auth || '';
+            return { l: `hysteria2://${auth}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
+        }
+
+        // --- Hysteria 1 ---
+        if (ob.type === 'hysteria') {
+            const params = new URLSearchParams();
+            params.set('peer', ob.tls?.server_name || ob.server_name || server); // v1 uses peer for SNI usually
+            if (ob.tls?.insecure) params.set('insecure', '1');
+            if (ob.up_mbps) params.set('up', ob.up_mbps);
+            if (ob.down_mbps) params.set('down', ob.down_mbps);
+            if (ob.auth_str) params.set('auth', ob.auth_str);
+            else if (ob.auth) params.set('auth', ob.auth);
+            
+            return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
+        }
+
+        // --- VLESS ---
+        if (ob.type === 'vless') {
+            const params = new URLSearchParams();
+            params.set('encryption', 'none');
+            
+            // Transport
+            const trans = ob.transport || {};
+            let net = trans.type || 'tcp';
+            if (net === 'http') { net = 'tcp'; params.set('type', 'http'); } 
+            else if (net !== 'tcp') params.set('type', net);
+
+            if (trans.path) params.set('path', trans.path);
+            if (trans.headers?.Host) params.set('host', trans.headers.Host);
+            if (trans.service_name) params.set('serviceName', trans.service_name);
+
+            // TLS
+            if (ob.tls?.enabled) {
+                params.set('security', 'tls');
+                if (ob.tls.server_name) params.set('sni', ob.tls.server_name);
+                if (ob.tls.insecure) params.set('allowInsecure', '1');
+                if (ob.tls.alpn) params.set('alpn', ob.tls.alpn.join(','));
+            }
+            // Reality (Singbox often puts reality under tls)
+            if (ob.tls?.reality?.enabled) {
+                 params.set('security', 'reality');
+                 if(ob.tls.reality.public_key) params.set('pbk', ob.tls.reality.public_key);
+                 if(ob.tls.reality.short_id) params.set('sid', ob.tls.reality.short_id);
+            }
+
+            return { l: `vless://${ob.uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
+        }
+
+        // --- VMess ---
+        if (ob.type === 'vmess') {
+            const trans = ob.transport || {};
+            const tls = ob.tls || {};
+            
+            const vmess = {
+                v: "2", ps: tag, add: server, port: port, id: ob.uuid, aid: ob.alter_id || 0,
+                scy: ob.security || "auto",
+                net: trans.type || "tcp",
+                type: "none",
+                host: tls.server_name || trans.headers?.Host || "",
+                path: trans.path || "",
+                tls: tls.enabled ? "tls" : ""
+            };
+            if (trans.type === 'grpc') {
+                vmess.path = trans.service_name || ""; 
+                vmess.net = "grpc";
             }
             
-            // --- Shadowsocks ---
-            else if (ob.type === 'shadowsocks') {
-                const userInfo = `${ob.method}:${ob.password}`;
-                const link = `ss://${safeBtoa(userInfo)}@${ob.server}:${ob.server_port}#${encodeURIComponent(tag)}`;
-                res.push({ l: link, p: 'ss', n: tag });
-            }
-            
-            // --- Hysteria2 ---
-            else if (ob.type === 'hysteria2') {
-                const params = new URLSearchParams();
-                if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
-                if (ob.tls?.insecure) params.set('insecure', '1');
-                if (ob.up_mbps) params.set('up', ob.up_mbps);
-                if (ob.down_mbps) params.set('down', ob.down_mbps);
-                
-                const auth = ob.password || ob.auth || '';
-                const link = `hysteria2://${auth}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
-                res.push({ l: link, p: 'hysteria2', n: tag });
-            }
-            
-            // --- VLESS ---
-            else if (ob.type === 'vless') {
-                const params = new URLSearchParams();
-                params.set('encryption', 'none');
-                
-                const net = ob.transport?.type || 'tcp';
-                if (net !== 'tcp') params.set('type', net);
-                
-                if (ob.tls?.enabled) {
-                    params.set('security', 'tls');
-                    if (ob.tls.server_name) params.set('sni', ob.tls.server_name);
-                    if (ob.tls.insecure) params.set('allowInsecure', '1');
-                }
-                
-                if (ob.transport?.path) params.set('path', ob.transport.path);
-                if (ob.transport?.headers?.Host) params.set('host', ob.transport.headers.Host);
-                if (ob.transport?.service_name) params.set('serviceName', ob.transport.service_name); // gRPC
-                
-                const uuid = ob.uuid || '';
-                const link = `vless://${uuid}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
-                res.push({ l: link, p: 'vless', n: tag });
-            }
-            
-            // --- Trojan ---
-            else if (ob.type === 'trojan') {
-                 const params = new URLSearchParams();
-                 if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
-                 if (ob.tls?.insecure) params.set('allowInsecure', '1');
-                 
-                 const password = ob.password || '';
-                 const link = `trojan://${password}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
-                 res.push({ l: link, p: 'trojan', n: tag });
-            }
-        } catch(e) {}
-    });
-    return res;
+            return { l: `vmess://${safeBtoa(JSON.stringify(vmess))}`, p: 'vmess', n: tag };
+        }
+
+        // --- Shadowsocks ---
+        if (ob.type === 'shadowsocks') {
+            const auth = `${ob.method}:${ob.password}`;
+            return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
+        }
+        
+        // --- Trojan ---
+        if (ob.type === 'trojan') {
+            const params = new URLSearchParams();
+            if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+            return { l: `trojan://${ob.password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
+        }
+
+    } catch(e) {}
+    
+    return null;
 }
 
-// 辅助: UTF-8 Safe Base64 Helpers
+function extractNodesRegex(text) {
+    const nodes = [];
+    const regex = /(vmess|vless|trojan|ss|hysteria2|hysteria):\/\/[^\s"',;<>]+/g;
+    const matches = text.match(regex);
+    if (!matches) return [];
+
+    matches.forEach(link => {
+        try {
+            let clean = link.split(/[\s"';<>,]/)[0];
+            let type = clean.split(':')[0];
+            let name = 'RegexNode';
+            if (clean.includes('#')) name = decodeURIComponent(clean.split('#')[1]);
+            nodes.push({ l: clean, p: type, n: name });
+        } catch(e){}
+    });
+    return nodes;
+}
+
 function safeBtoa(str) {
-    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
-        function toSolidBytes(match, p1) {
-            return String.fromCharCode('0x' + p1);
-    }));
+    try {
+        return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode('0x' + p1)));
+    } catch (e) { return btoa(str); }
 }
 
 function safeAtob(str) {
     try {
-        return decodeURIComponent(atob(str).split('').map(function(c) {
-            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
-    } catch(e) {
-        return atob(str); // Fallback to standard atob
-    }
+        return decodeURIComponent(atob(str).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+    } catch (e) { return atob(str); }
 }
