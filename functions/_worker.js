@@ -1,11 +1,12 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v9)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v10)
  * 
  * Update Log:
- * - Fix: Use 'new Function' to parse relaxed JSON (handles comments/unquoted keys natively)
- * - Fix: Support Sing-box Hysteria2 'users' array structure
- * - Fix: URI Encode passwords and tags
- * - Fix: Improved deduplication key (Link + Protocol)
+ * - New: YAML Parser fallback (for Clash/Meta configs)
+ * - Fix: Hysteria 2 'users' array and 'obfs' params logic
+ * - Fix: Base64 detection logic to handle multiline Base64 correctly
+ * - Fix: Aggressive field trimming to prevent "hysteria2 " type errors
+ * - Fix: Fetch timeout (8s) to prevent hanging
  */
 
 // ==========================================
@@ -195,7 +196,7 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan Mode)...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan + YAML/JSON)...");
         const start = Date.now();
         
         try {
@@ -248,14 +249,14 @@ async function handleTelegramCommand(message, env, origin) {
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v9 (Eval+UsersFix)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v10 (YAML+JSON+B64)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v9)
+// 4. Ultimate Parser Logic (v10)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -265,37 +266,58 @@ async function fetchAndParseAll(urls) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
+                // Add Timeout to prevent hanging
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
+                
                 const res = await fetch(u, { 
                     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-                    cf: { cacheTtl: 60 }
+                    cf: { cacheTtl: 60 },
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
+
                 if (!res.ok) return;
                 let text = await res.text();
-                // Strip BOM
                 text = text.replace(/^\uFEFF/, '').trim();
 
                 let foundInThisUrl = [];
 
-                // Strategy 1: Relaxed JSON Parse (handles comments, unquoted keys)
+                // 1. Try Relaxed JSON
                 const json = tryParseDirtyJSON(text);
-                if (json) {
-                    foundInThisUrl = findNodesRecursively(json);
-                }
+                if (json) foundInThisUrl = findNodesRecursively(json);
 
-                // Strategy 2: Base64 -> Relaxed JSON
+                // 2. If no JSON results, try Base64 (only if it looks like Base64 and not valid JSON/URL list)
                 if (foundInThisUrl.length === 0) {
-                     if (!text.includes(' ') && !text.includes('\n')) {
+                     // Check if it's likely NOT a plain list
+                     if (!text.includes('://') && !text.includes('proxies:')) {
                          try {
                              const decoded = safeAtob(text);
                              const jsonDecoded = tryParseDirtyJSON(decoded);
                              if (jsonDecoded) {
                                  foundInThisUrl = findNodesRecursively(jsonDecoded);
                              } else {
+                                 // Regex on decoded
                                  foundInThisUrl = extractNodesRegex(decoded);
+                                 // YAML on decoded
+                                 if(foundInThisUrl.length === 0) {
+                                     const y = parseYamlByRegex(decoded);
+                                     if(y.length > 0) foundInThisUrl = y;
+                                 }
                              }
                          } catch(e) {}
-                     } else {
-                         foundInThisUrl = extractNodesRegex(text);
+                     }
+                }
+
+                // 3. Fallbacks on Original Text
+                if (foundInThisUrl.length === 0) {
+                     // Regex on original
+                     foundInThisUrl = extractNodesRegex(text);
+                     
+                     // YAML on original (Clash/Meta)
+                     if(foundInThisUrl.length === 0) {
+                         const y = parseYamlByRegex(text);
+                         if(y.length > 0) foundInThisUrl = y;
                      }
                 }
 
@@ -305,7 +327,7 @@ async function fetchAndParseAll(urls) {
         await Promise.all(promises);
     }
 
-    // Deduplicate (Use Link + Protocol to ensure Hysteria vs Hysteria2 distinction)
+    // Deduplicate
     const unique = new Map();
     nodes.forEach(n => {
         if(n.l) {
@@ -316,32 +338,59 @@ async function fetchAndParseAll(urls) {
     return Array.from(unique.values());
 }
 
-// Powerful parser using new Function to handle JS objects/comments
 function tryParseDirtyJSON(str) {
     if (!str || typeof str !== 'string') return null;
-    try {
-        // Try strict JSON first for speed
-        return JSON.parse(str);
-    } catch (e) {
-        try {
-            // Fallback to JS evaluation (sandbox-ish)
-            // This handles comments //, unquoted keys { a: 1 }, trailing commas
-            return new Function('return (' + str + ')')();
-        } catch (e2) {
-            return null;
-        }
+    try { return JSON.parse(str); } catch (e) {
+        try { return new Function('return (' + str + ')')(); } catch (e2) { return null; }
     }
+}
+
+function parseYamlByRegex(text) {
+    // Naive YAML parser for "proxies:" list
+    const nodes = [];
+    try {
+        // Find blocks starting with "- name:" or "- {name:"
+        // Simplify: split by "- " at start of lines (indented or not)
+        const items = text.split(/\n\s*-\s+/).slice(1); 
+        for(const item of items) {
+            const node = {};
+            const lines = item.split('\n');
+            for(const line of lines) {
+                // stop if next block starts (unlikely with split)
+                const parts = line.split(':');
+                if(parts.length < 2) continue;
+                
+                let key = parts[0].trim().replace(/['"]/g, '');
+                let val = parts.slice(1).join(':').trim().replace(/['"]/g, ''); // simple value clean
+                
+                // Inline JSON-like yaml: { name: "x", ... }
+                if(line.trim().startsWith('{') && line.trim().endsWith('}')) {
+                     // Try parsing inline object
+                     const inline = tryParseDirtyJSON(line.trim());
+                     if(inline) Object.assign(node, inline);
+                } else {
+                     if(val === 'true') val = true;
+                     if(val === 'false') val = false;
+                     // Clean comments
+                     if(typeof val === 'string' && val.includes('#')) val = val.split('#')[0].trim();
+                     node[key] = val;
+                }
+            }
+            const flat = parseFlatNode(node);
+            if(flat) nodes.push(flat);
+        }
+    } catch(e){}
+    return nodes;
 }
 
 function findNodesRecursively(obj) {
     let results = [];
     if (!obj || typeof obj !== 'object') return results;
 
-    // --- Container Arrays ---
     if (Array.isArray(obj.outbounds)) obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
     if (Array.isArray(obj.proxies)) obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
     
-    // --- Xray Nested ---
+    // Check Settings
     if (obj.settings && (obj.settings.vnext || obj.settings.servers)) {
         const target = obj.settings.vnext || obj.settings.servers;
         if (Array.isArray(target)) {
@@ -352,16 +401,13 @@ function findNodesRecursively(obj) {
         }
     }
 
-    // --- Direct Node Check ---
     const node = parseFlatNode(obj);
     if (node) results.push(node);
 
-    // --- General Recursion ---
     if (Array.isArray(obj)) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
         Object.keys(obj).forEach(key => {
-            // Avoid large data fields
             if (key !== 'body' && key !== 'data') results.push(...findNodesRecursively(obj[key]));
         });
     }
@@ -383,10 +429,8 @@ function parseFlatNode(ob) {
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
     let port = getProp(ob, ['server_port', 'port']);
 
-    // Handle host:port string
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
-        // Simple check to avoid breaking IPv6 [::]:port which split returns > 2
         if (parts.length === 2 && !isNaN(parts[1])) {
             server = parts[0];
             port = parseInt(parts[1]);
@@ -394,9 +438,12 @@ function parseFlatNode(ob) {
     }
     
     if (!server || !port) return null;
+    
+    // Trim
+    if(typeof server === 'string') server = server.trim();
 
     let type = getProp(ob, ['type', 'protocol', 'network']);
-    type = (type || '').toLowerCase();
+    type = (type || '').toLowerCase().trim();
     
     // Auto-Inference
     if (!type) {
@@ -406,7 +453,6 @@ function parseFlatNode(ob) {
     }
 
     if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
-    // Remove "field" etc. but keep Hysteria
     if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
 
     const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
@@ -420,11 +466,12 @@ function parseFlatNode(ob) {
         // --- Hysteria 2 ---
         if (type === 'hysteria2') {
             let password = getProp(ob, ['password', 'auth', 'auth_str']);
-            // Handle users array (Singbox variation)
             const users = getProp(ob, ['users']);
             if (!password && Array.isArray(users) && users.length > 0) {
                 password = users[0].password || users[0].auth;
             }
+            // Trim password
+            if(typeof password === 'string') password = password.trim();
 
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
@@ -435,6 +482,11 @@ function parseFlatNode(ob) {
             if (obfs && typeof obfs === 'object') {
                  if (obfs.type === 'salamander') params.set('obfs', 'salamander');
                  if (obfs.password) params.set('obfs-password', obfs.password);
+            } else if (obfs && typeof obfs === 'string') {
+                 // Clash might use string 'salamander'
+                 params.set('obfs', obfs);
+                 const obfsPwd = getProp(ob, ['obfs-password', 'obfs_password']);
+                 if(obfsPwd) params.set('obfs-password', obfsPwd);
             }
 
             return { 
@@ -452,10 +504,11 @@ function parseFlatNode(ob) {
             
             const up = getProp(ob, ['up', 'up_mbps']) || '100'; 
             const down = getProp(ob, ['down', 'down_mbps']) || '100';
-            params.set('up', up);
-            params.set('down', down);
+            params.set('up', parseInt(up)||100);
+            params.set('down', parseInt(down)||100);
             
-            const auth = getProp(ob, ['auth', 'auth_str', 'password']);
+            let auth = getProp(ob, ['auth', 'auth_str', 'password']);
+            if (auth && typeof auth === 'object') auth = auth.password || ''; // Handle object auth
             if (auth) params.set('auth', auth);
             
             const protocol = getProp(ob, ['protocol']);
@@ -492,14 +545,6 @@ function parseFlatNode(ob) {
             
             const flow = getProp(ob, ['flow']);
             if (flow) params.set('flow', flow);
-
-            // Reality
-            const reality = getProp(tlsObj, ['reality']) || getProp(ob, ['reality']);
-            if (reality && (reality.enabled || reality.public_key)) {
-                params.set('security', 'reality');
-                if (reality.public_key) params.set('pbk', reality.public_key);
-                if (reality.short_id) params.set('sid', reality.short_id);
-            }
 
             return { l: `vless://${uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
         }
