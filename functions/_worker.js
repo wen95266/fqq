@@ -1,10 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v10.1)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v10.2)
  * 
  * Update Log:
  * - Update: Expanded PRESET_URLS list
  * - Fix: URL Encoding for Hysteria/Hysteria2/Trojan passwords/tags
  * - Feature: Added basic TUIC support
+ * - Fix: Enhanced Hysteria 2 type inference
  */
 
 // ==========================================
@@ -271,14 +272,14 @@ async function handleTelegramCommand(message, env, origin) {
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v10.1 (YAML+JSON+B64)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v10.2 (YAML+JSON+B64)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v10.1)
+// 4. Ultimate Parser Logic (v10.2)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -451,9 +452,11 @@ function parseFlatNode(ob) {
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
     let port = getProp(ob, ['server_port', 'port']);
 
+    // Handle "server": "ip:port" case commonly found in raw configs
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
-        if (parts.length === 2 && !isNaN(parts[1])) {
+        // Only if parts[1] is a number
+        if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
             server = parts[0];
             port = parseInt(parts[1]);
         }
@@ -461,8 +464,12 @@ function parseFlatNode(ob) {
     
     if (!server || !port) return null;
     
-    // Trim
-    if(typeof server === 'string') server = server.trim();
+    // Trim and Clean
+    if(typeof server === 'string') {
+        server = server.trim();
+        // Remove http/https prefix if present in server field
+        server = server.replace(/^https?:\/\//, '');
+    }
 
     let type = getProp(ob, ['type', 'protocol', 'network']);
     type = (type || '').toLowerCase().trim();
@@ -473,8 +480,19 @@ function parseFlatNode(ob) {
     // Auto-Inference
     if (!type) {
         if (getProp(ob, ['uuid', 'id'])) type = 'vless'; 
-        else if (getProp(ob, ['up_mbps', 'auth_str'])) type = 'hysteria';
+        else if (getProp(ob, ['up_mbps', 'auth_str']) || (getProp(ob, ['protocol']) === 'udp')) type = 'hysteria';
         else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
+        // Improved Hysteria 2 inference: has auth/password, no method (ss), no uuid (vless/vmess)
+        else if ((getProp(ob, ['auth']) || getProp(ob, ['password'])) && !getProp(ob, ['method'])) {
+             // If obfs-type is salamander, definitely Hysteria 2
+             const obfs = getProp(ob, ['obfs']);
+             if (obfs && (obfs === 'salamander' || obfs.type === 'salamander')) {
+                 type = 'hysteria2';
+             } else {
+                 // Fallback to Hysteria 2 as default for simple auth+server
+                 type = 'hysteria2';
+             }
+        }
     }
 
     if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
