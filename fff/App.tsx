@@ -30,19 +30,34 @@ const App: React.FC = () => {
                   setServerStatus(data);
               } catch (e) {
                   // 如果返回的不是 JSON（可能是本地 Vite 返回的 index.html）
-                  setServerStatus(null);
-                  setFetchError(true);
+                  handleFetchError();
               }
           } else {
-              setServerStatus(null);
-              setFetchError(true);
+              handleFetchError();
           }
       } catch (e) {
           console.error("Failed to fetch status");
-          setServerStatus(null);
-          setFetchError(true);
+          handleFetchError();
       } finally {
           setIsLoading(false);
+      }
+  };
+
+  const handleFetchError = () => {
+      // 如果是本地开发环境，使用模拟数据
+      // @ts-ignore: Fix for property 'env' does not exist on type 'ImportMeta' without needing extra d.ts
+      if ((import.meta as any).env.DEV) {
+          console.log("Running in DEV mode, using mock data.");
+          setServerStatus({
+              count: 999,
+              last_update: 'Local Dev Mode',
+              bot_ready: true,
+              kv_ready: true
+          });
+          setFetchError(false);
+      } else {
+          setServerStatus(null);
+          setFetchError(true);
       }
   };
 
@@ -96,7 +111,7 @@ const App: React.FC = () => {
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-8">
         
-        {/* 错误提示：本地开发环境或后端未部署 */}
+        {/* 错误提示：仅在非开发模式下显示错误 */}
         {fetchError && (
             <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 flex items-start gap-3">
                 <AlertTriangle className="text-orange-400 shrink-0 mt-0.5" size={20} />
