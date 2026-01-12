@@ -1,11 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v5)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v6)
  * 
  * Update Log:
- * - Bot: Added QR Code image response (sendPhoto)
- * - Bot: Added detailed protocol statistics in Status/Update
- * - Bot: Added "Check Config" command
- * - Core: Refined parser for better compatibility
+ * - Fix: Restore missing Hysteria nodes (Sing-box parsing logic fixed)
+ * - Fix: specific handling for 'server_port' vs 'port'
+ * - Fix: explicit mapping for Sing-box 'outbounds' and Clash 'proxies' arrays
+ * - Bot: Keep existing QR/Status features
  */
 
 // ==========================================
@@ -87,9 +87,7 @@ export default {
         const update = await request.json();
         if (update.message && update.message.text) {
              const chatId = String(update.message.from.id);
-             // 鉴权：如果有 ADMIN_ID，则只响应 ADMIN_ID
              if (env.ADMIN_ID && chatId !== String(env.ADMIN_ID)) {
-                 // Unauthorized
                  return new Response('OK');
              }
              ctx.waitUntil(handleTelegramCommand(update.message, env, url.origin));
@@ -122,7 +120,7 @@ export default {
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
-    // Auto-detect type from URL path
+    // Auto-detect type
     ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash', 'singbox'].forEach(t => {
         if (pathPart.includes(t)) targetType = t;
     });
@@ -139,12 +137,10 @@ export default {
     let filteredNodes = nodesData;
     if (targetType && targetType !== 'all') {
       const types = targetType.split(',').map(t => t.trim());
-      // Special match: "hysteria" matches both "hysteria" and "hysteria2" if needed, 
-      // but here we stick to strict type matching unless it's "all"
       filteredNodes = nodesData.filter(node => types.some(t => node.p === t)); 
     }
 
-    // Loose filter: Ensure we have a link and a protocol
+    // Ensure valid nodes
     filteredNodes = filteredNodes.filter(n => n.l && n.p);
 
     const links = filteredNodes.map(n => n.l).join('\n');
@@ -169,7 +165,6 @@ async function handleTelegramCommand(message, env, origin) {
     const chatId = message.chat.id;
     const text = message.text.trim();
     
-    // --- Helper: Send Text ---
     const send = async (msg) => {
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`, {
             method: 'POST',
@@ -184,7 +179,6 @@ async function handleTelegramCommand(message, env, origin) {
         });
     };
 
-    // --- Helper: Send Photo (for QR) ---
     const sendPhoto = async (photoUrl, caption) => {
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendPhoto`, {
             method: 'POST',
@@ -200,20 +194,19 @@ async function handleTelegramCommand(message, env, origin) {
     };
 
     if (text.includes('立即更新')) {
-        if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。请在 Cloudflare Pages 后台绑定 KV Namespace。`);
+        if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取并解析节点 (支持 VLESS/VMess/Hysteria/Trojan/SS)...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取并解析节点...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
-            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但有效节点数为 0。`);
+            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但节点数为 0。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
             const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             await env.KV.put('LAST_UPDATE', time);
             
-            // Generate Protocol Stats
             const stats = {};
             nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
             const statsStr = Object.entries(stats).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
@@ -239,58 +232,29 @@ async function handleTelegramCommand(message, env, origin) {
             }
             last = await env.KV.get('LAST_UPDATE') || "无";
         }
-        
         await send(`📊 <b>系统状态</b>\n\n🟢 <b>节点总数:</b> ${count}\n${statsStr}\n\n🕒 <b>上次更新:</b> ${last}`);
 
     } else if (text.includes('订阅链接')) {
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
         const msg = [
             `🔗 <b>订阅链接 (Subscription)</b>`,
-            ``,
-            `🌍 <b>Universal (通用):</b>`,
-            `<code>${origin}/all</code>`,
-            ``,
-            `🚀 <b>VLESS:</b>`,
-            `<code>${origin}/vless</code>`,
-            ``,
-            `⚡ <b>Hysteria 2:</b>`,
-            `<code>${origin}/hysteria2</code>`,
-            ``,
-            `🐱 <b>Clash:</b>`,
-            `<code>${origin}/clash</code>`
+            `<code>${origin}/all</code>`
         ].join('\n');
-
-        // Attempt to send Photo with Caption
-        try {
-            await sendPhoto(qrApi, msg);
-        } catch(e) {
-            // Fallback to text if photo fails
-            await send(msg);
-        }
+        try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        const checks = [
-            `⚙️ <b>配置检测</b>`,
-            ``,
-            `KV Binding: ${env.KV ? '✅' : '❌ (未绑定)'}`,
-            `TG_TOKEN: ${env.TG_TOKEN ? '✅' : '❌ (未设置)'}`,
-            `ADMIN_ID: ${env.ADMIN_ID ? '✅' : '⚠️ (公开模式)'}`,
-            `Domain: ${origin}`,
-            `Parse Engine: Ultimate v5`
-        ].join('\n');
-        await send(checks);
-
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: V6 (Fix Hysteria)`);
     } else {
-        await send(`👋 <b>SubLink Bot Ready</b>\n\n请点击底部键盘菜单进行操作。`);
+        await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v5)
+// 4. Ultimate Parser Logic (v6 - Fixed)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 8; // Slightly reduced batch size for stability
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const batch = urls.slice(i, i + BATCH_SIZE);
@@ -304,33 +268,32 @@ async function fetchAndParseAll(urls) {
                 let text = await res.text();
                 text = text.trim();
 
-                let jsonNodes = [];
-                // Strategy 1: Smart JSON Parse
+                let foundInThisUrl = [];
+
+                // 1. Try JSON Parsing first (Best for Sing-box/Xray)
                 if (text.startsWith('{') || text.startsWith('[')) {
                     try {
                         const json = JSON.parse(text);
-                        jsonNodes = findNodesRecursively(json);
+                        foundInThisUrl = findNodesRecursively(json);
                     } catch(e) {}
                 }
 
-                if (jsonNodes.length > 0) {
-                    nodes.push(...jsonNodes);
-                } else {
-                    // Strategy 2: Base64/Regex
+                // 2. If JSON found nothing, or text looks like base64/list
+                if (foundInThisUrl.length === 0) {
                     let decoded = text;
-                    // Detect if it is Base64
                     if (!text.includes(' ') && !text.includes('\n') && text.length > 20) {
                         try { decoded = safeAtob(text); } catch(e) {}
                     }
-                    const regexNodes = extractNodesRegex(decoded);
-                    nodes.push(...regexNodes);
+                    foundInThisUrl = extractNodesRegex(decoded);
                 }
+
+                nodes.push(...foundInThisUrl);
             } catch(e) {}
         });
         await Promise.all(promises);
     }
 
-    // Deduplicate
+    // Deduplicate based on Link
     const unique = new Map();
     nodes.forEach(n => {
         if(n.l && !unique.has(n.l)) unique.set(n.l, n);
@@ -342,36 +305,37 @@ function findNodesRecursively(obj) {
     let results = [];
     if (!obj || typeof obj !== 'object') return results;
 
-    // --- Case A: Xray/V2Ray structure (protocol + settings.vnext/servers) ---
-    // This handles the "outbounds" item that contains nested servers
-    if (obj.protocol && obj.settings) {
-        let foundChildren = false;
-        if (obj.settings.vnext && Array.isArray(obj.settings.vnext)) {
-            obj.settings.vnext.forEach(v => {
+    // --- Critical Fix: Explicitly handle Container Arrays first ---
+    // Sing-box uses 'outbounds', Clash uses 'proxies'
+    if (Array.isArray(obj.outbounds)) {
+        obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
+        return results;
+    }
+    if (Array.isArray(obj.proxies)) {
+        obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
+        return results;
+    }
+
+    // --- Case A: Xray/V2Ray Nested Servers ---
+    if (obj.protocol && obj.settings && (obj.settings.vnext || obj.settings.servers)) {
+        const target = obj.settings.vnext || obj.settings.servers;
+        if (Array.isArray(target)) {
+            target.forEach(v => {
                 const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
                 if (subNode) results.push(subNode);
             });
-            foundChildren = true;
+            return results;
         }
-        if (obj.settings.servers && Array.isArray(obj.settings.servers)) {
-            obj.settings.servers.forEach(v => {
-                const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
-                if (subNode) results.push(subNode);
-            });
-            foundChildren = true;
-        }
-        if (foundChildren) return results; 
     }
 
     // --- Case B: Direct Node Object ---
     const node = parseFlatNode(obj);
     if (node) {
         results.push(node);
-        // Standard Sing-box objects don't nest further
         return results; 
     }
 
-    // --- Case C: Recursion ---
+    // --- Case C: General Recursion (fallback) ---
     if (Array.isArray(obj)) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
@@ -380,24 +344,25 @@ function findNodesRecursively(obj) {
     return results;
 }
 
-// Helper: Case-insensitive property getter
 function getProp(obj, keys) {
     if (!Array.isArray(keys)) keys = [keys];
     const objKeys = Object.keys(obj);
     for (const k of keys) {
+        // Strict match then case-insensitive match
+        if (obj[k] !== undefined) return obj[k];
         const found = objKeys.find(ok => ok.toLowerCase() === k.toLowerCase());
         if (found) return obj[found];
     }
     return undefined;
 }
 
-// Parse "Flat" nodes (Sing-box, Clash, Hysteria root objects)
 function parseFlatNode(ob) {
-    // 1. Determine Address/Port first (Critical)
+    // 1. Determine Address/Port
+    // Sing-box uses 'server_port', Clash uses 'port'
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
     let port = getProp(ob, ['server_port', 'port']);
 
-    // Handle "host:port" string in server field
+    // Handle "host:port" strings
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
         if (parts.length === 2 && !isNaN(parts[1])) {
@@ -412,56 +377,62 @@ function parseFlatNode(ob) {
     let type = getProp(ob, ['type', 'protocol', 'network']);
     type = (type || '').toLowerCase();
     
-    // Aggressive Type Inference
+    // Auto-Inference
     if (!type) {
-        if (getProp(ob, ['uuid', 'id', 'user_id'])) type = 'vless'; 
-        else if (getProp(ob, ['auth_str', 'auth_payload', 'up_mbps'])) type = 'hysteria';
+        if (getProp(ob, ['uuid', 'id'])) type = 'vless'; 
+        else if (getProp(ob, ['up_mbps', 'auth_str'])) type = 'hysteria';
         else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
-        else if (getProp(ob, ['password']) && !getProp(ob, ['method'])) type = 'trojan'; 
     }
 
-    // Disambiguate VLESS/VMess if inferred solely by UUID
-    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) {
-        type = 'vmess';
-    }
-    
-    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
+    // Disambiguate VLESS/VMess
+    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
+
+    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field'].includes(type)) return null;
 
     const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
     const uuid = getProp(ob, ['uuid', 'id', 'user_id']);
-    const password = getProp(ob, ['password', 'auth', 'auth_str']);
     
-    // TLS / Transport Commons
+    // TLS
     const tlsObj = getProp(ob, ['tls']) || {};
     const isTls = tlsObj === true || tlsObj.enabled === true || getProp(ob, ['tls']) === true;
     const sni = getProp(tlsObj, ['server_name', 'sni']) || getProp(ob, ['sni', 'servername', 'host']);
     const insecure = getProp(tlsObj, ['insecure']) || getProp(ob, ['insecure', 'skip-cert-verify']) ? '1' : '0';
     
-    const transport = getProp(ob, ['transport']) || {};
-    const network = getProp(transport, ['type']) || getProp(ob, ['network', 'net']) || 'tcp';
-    const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host || sni;
-    const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
-
     try {
         // --- Hysteria 2 ---
-        if (type.includes('hysteria2') || (type === 'hysteria' && !getProp(ob, ['up_mbps']))) {
+        if (type === 'hysteria2') {
+            const password = getProp(ob, ['password', 'auth', 'auth_str']);
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('insecure', '1');
+            // Singbox might use 'obfs' object
+            const obfs = getProp(ob, ['obfs']);
+            if (obfs && obfs.password) params.set('obfs', obfs.password);
+
             return { l: `hysteria2://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
         }
 
         // --- Hysteria 1 ---
-        if (type.includes('hysteria')) {
+        // Crucial Fix: Singbox uses 'up_mbps'/'down_mbps' and 'auth_str'
+        if (type === 'hysteria') {
             const params = new URLSearchParams();
             params.set('peer', sni || server);
             if (insecure === '1') params.set('insecure', '1');
-            const up = getProp(ob, ['up', 'up_mbps']);
-            const down = getProp(ob, ['down', 'down_mbps']);
-            if (up) params.set('up', up);
-            if (down) params.set('down', down);
-            if (password) params.set('auth', password);
             
+            const up = getProp(ob, ['up', 'up_mbps']) || '100'; // Default to 100 if missing
+            const down = getProp(ob, ['down', 'down_mbps']) || '100';
+            params.set('up', up);
+            params.set('down', down);
+            
+            const auth = getProp(ob, ['auth', 'auth_str', 'password']);
+            if (auth) params.set('auth', auth);
+            
+            const alpn = getProp(ob, ['alpn']); // Array or string
+            if (alpn) params.set('alpn', Array.isArray(alpn) ? alpn[0] : alpn);
+            
+            const protocol = getProp(ob, ['protocol']);
+            if (protocol) params.set('protocol', protocol);
+
             return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
         }
 
@@ -470,21 +441,23 @@ function parseFlatNode(ob) {
             const params = new URLSearchParams();
             params.set('encryption', 'none');
             
+            const transport = getProp(ob, ['transport']) || {};
+            const network = getProp(transport, ['type']) || getProp(ob, ['network', 'net']) || 'tcp';
+            
             if (network !== 'tcp') params.set('type', network === 'http' ? 'tcp' : network);
             if (network === 'http') params.set('headerType', 'http');
-            
             if (isTls) params.set('security', 'tls');
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('allowInsecure', '1');
+            
+            const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host || sni;
+            const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
             
             if (host) params.set('host', host);
             if (path) params.set('path', path);
             
             const serviceName = getProp(transport, ['service_name']) || getProp(ob, ['serviceName', 'grpc-service-name']);
             if (serviceName) params.set('serviceName', serviceName);
-            
-            const fp = getProp(ob, ['fingerprint', 'fp']);
-            if (fp) params.set('fp', fp);
 
             // Reality
             const reality = getProp(tlsObj, ['reality']) || getProp(ob, ['reality']);
@@ -499,6 +472,11 @@ function parseFlatNode(ob) {
 
         // --- VMess ---
         if (type === 'vmess') {
+            const transport = getProp(ob, ['transport']) || {};
+            const network = getProp(transport, ['type']) || getProp(ob, ['network', 'net']) || 'tcp';
+            const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host || sni;
+            const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
+            
             const vmess = {
                 v: "2", ps: tag, add: server, port: port, id: uuid, 
                 aid: getProp(ob, ['alterId', 'alter_id']) || 0,
@@ -515,22 +493,24 @@ function parseFlatNode(ob) {
             
             return { l: `vmess://${safeBtoa(JSON.stringify(vmess))}`, p: 'vmess', n: tag };
         }
-
-        // --- Shadowsocks ---
-        if (type === 'shadowsocks' || type === 'ss') {
-            const method = getProp(ob, ['method', 'cipher']);
-            if (method && password) {
-                const auth = `${method}:${password}`;
-                return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
-            }
-        }
         
         // --- Trojan ---
         if (type === 'trojan') {
+            const password = getProp(ob, ['password', 'auth']);
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('allowInsecure', '1');
             return { l: `trojan://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
+        }
+        
+        // --- Shadowsocks ---
+        if (type === 'shadowsocks' || type === 'ss') {
+            const method = getProp(ob, ['method', 'cipher']);
+            const password = getProp(ob, ['password']);
+            if (method && password) {
+                const auth = `${method}:${password}`;
+                return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
+            }
         }
 
     } catch(e) {}
@@ -538,11 +518,8 @@ function parseFlatNode(ob) {
     return null;
 }
 
-// Handle Xray's split structure
 function parseXrayChild(protocol, vChild, streamSettings) {
     if (!vChild.address || !vChild.port) return null;
-    
-    // Combine into a single object for parseFlatNode
     const node = {
         protocol: protocol,
         server: vChild.address,
@@ -550,7 +527,6 @@ function parseXrayChild(protocol, vChild, streamSettings) {
         tag: `Xray-${protocol}-${Math.floor(Math.random()*1000)}`,
         ...streamSettings
     };
-
     if (vChild.users && vChild.users[0]) {
         const u = vChild.users[0];
         node.uuid = u.id;
@@ -559,24 +535,18 @@ function parseXrayChild(protocol, vChild, streamSettings) {
         node.alter_id = u.alterId;
         node.method = u.method;
     }
-    
-    // Handle Xray-specific streamSettings nesting
+    // StreamSettings mapping
     if (streamSettings) {
         node.network = streamSettings.network;
         if (streamSettings.security === 'tls') {
              node.tls = { enabled: true, server_name: streamSettings.tlsSettings?.serverName };
-             // Merge allowInsecure if present
              if (streamSettings.tlsSettings?.allowInsecure) node.insecure = true;
         }
         if (streamSettings.wsSettings) {
              node['path'] = streamSettings.wsSettings.path;
              node['host'] = streamSettings.wsSettings.headers?.Host;
         }
-        if (streamSettings.grpcSettings) {
-             node['serviceName'] = streamSettings.grpcSettings.serviceName;
-        }
     }
-    
     return parseFlatNode(node);
 }
 
@@ -605,13 +575,8 @@ function safeBtoa(str) {
 }
 
 function safeAtob(str) {
-    // 1. Strip whitespace
-    str = str.replace(/\s/g, '');
-    // 2. URL Safe fix
-    str = str.replace(/-/g, '+').replace(/_/g, '/');
-    // 3. Padding fix
+    str = str.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
     while (str.length % 4) str += '=';
-    
     try {
         return decodeURIComponent(atob(str).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
     } catch (e) { 
