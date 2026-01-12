@@ -178,6 +178,15 @@ const parseSingbox = (list: any[]): ProxyNode[] => {
       originalLink: ''
     };
     
+    // Fallback if server_port is missing but server contains port
+    if (!node.port && node.address && node.address.includes(':')) {
+        const parts = node.address.split(':');
+        if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
+            node.address = parts[0];
+            node.port = parseInt(parts[1]);
+        }
+    }
+    
     node.originalLink = constructLink(node);
     if (node.address && node.port) nodes.push(node);
   });
@@ -219,12 +228,23 @@ const parseClash = (proxies: any[]): ProxyNode[] => {
 };
 
 const parseHysteriaSingle = (json: any): ProxyNode => {
+    let address = json.server;
+    let port = json.server_port || json.port || 443;
+    
+    if (address && address.includes(':')) {
+        const parts = address.split(':');
+        if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
+            address = parts[0];
+            port = parseInt(parts[1]);
+        }
+    }
+
     const node: ProxyNode = {
         id: `hy2-${Date.now()}-${Math.random()}`,
         name: 'Hysteria2 Node',
         protocol: ProtocolType.HYSTERIA2,
-        address: json.server ? json.server.split(':')[0] : '',
-        port: json.server ? (parseInt(json.server.split(':')[1]) || 443) : 0,
+        address: address,
+        port: port,
         password: json.auth || json.password,
         tls: json.tls?.enabled !== false,
         originalLink: ''
@@ -286,23 +306,23 @@ const extractLinksRegex = (text: string): ProxyNode[] => {
 // --- Helpers ---
 
 const mapSingboxTypeToProtocol = (type: string): ProtocolType => {
-  const t = type.toLowerCase();
+  const t = (type || '').toLowerCase();
   if (t === 'vmess') return ProtocolType.VMESS;
   if (t === 'vless') return ProtocolType.VLESS;
   if (t === 'trojan') return ProtocolType.TROJAN;
   if (t === 'shadowsocks') return ProtocolType.SHADOWSOCKS;
-  if (t === 'hysteria2') return ProtocolType.HYSTERIA2;
+  if (t === 'hysteria2' || t === 'hy2') return ProtocolType.HYSTERIA2;
   if (t === 'tuic') return ProtocolType.TUIC;
   return ProtocolType.UNKNOWN;
 };
 
 const mapClashTypeToProtocol = (type: string): ProtocolType => {
-  const t = type.toLowerCase();
+  const t = (type || '').toLowerCase();
   if (t === 'vmess') return ProtocolType.VMESS;
   if (t === 'vless') return ProtocolType.VLESS;
   if (t === 'trojan') return ProtocolType.TROJAN;
   if (t === 'ss') return ProtocolType.SHADOWSOCKS;
-  if (t === 'hysteria2') return ProtocolType.HYSTERIA2;
+  if (t === 'hysteria2' || t === 'hy2') return ProtocolType.HYSTERIA2;
   return ProtocolType.UNKNOWN;
 };
 
