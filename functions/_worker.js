@@ -1,11 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v6)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v7)
  * 
  * Update Log:
- * - Fix: Restore missing Hysteria nodes (Sing-box parsing logic fixed)
- * - Fix: specific handling for 'server_port' vs 'port'
- * - Fix: explicit mapping for Sing-box 'outbounds' and Clash 'proxies' arrays
- * - Bot: Keep existing QR/Status features
+ * - CRITICAL FIX: Added `stripJsonComments` to handle Sing-box configs with // comments
+ * - Fix: Deep recursion logic (don't stop early)
+ * - Fix: Hysteria 2 obfs/password mapping
+ * - Fix: VLESS flow (vision) support
  */
 
 // ==========================================
@@ -120,7 +120,6 @@ export default {
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
-    // Auto-detect type
     ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash', 'singbox'].forEach(t => {
         if (pathPart.includes(t)) targetType = t;
     });
@@ -139,8 +138,8 @@ export default {
       const types = targetType.split(',').map(t => t.trim());
       filteredNodes = nodesData.filter(node => types.some(t => node.p === t)); 
     }
-
-    // Ensure valid nodes
+    
+    // Final sanity check
     filteredNodes = filteredNodes.filter(n => n.l && n.p);
 
     const links = filteredNodes.map(n => n.l).join('\n');
@@ -196,12 +195,12 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取并解析节点...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源深度抓取节点 (Deep Scan Mode)...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
-            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但节点数为 0。`);
+            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但节点数为 0。\n可能原因：源站不可达或格式不兼容。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
             const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -238,30 +237,32 @@ async function handleTelegramCommand(message, env, origin) {
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
         const msg = [
             `🔗 <b>订阅链接 (Subscription)</b>`,
-            `<code>${origin}/all</code>`
+            `<code>${origin}/all</code>`,
+            ``,
+            `<b>提示:</b> 支持 VLESS, Hysteria2, VMess 等主流协议。`
         ].join('\n');
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: V6 (Fix Hysteria)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: V7 (JSON Fix)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v6 - Fixed)
+// 4. Ultimate Parser Logic (v7 - JSON Fix)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    const BATCH_SIZE = 8; // Slightly reduced batch size for stability
+    const BATCH_SIZE = 8;
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
                 const res = await fetch(u, { 
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' },
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
                     cf: { cacheTtl: 60 }
                 });
                 if (!res.ok) return;
@@ -270,15 +271,13 @@ async function fetchAndParseAll(urls) {
 
                 let foundInThisUrl = [];
 
-                // 1. Try JSON Parsing first (Best for Sing-box/Xray)
-                if (text.startsWith('{') || text.startsWith('[')) {
-                    try {
-                        const json = JSON.parse(text);
-                        foundInThisUrl = findNodesRecursively(json);
-                    } catch(e) {}
+                // 1. Try to Parse JSON (Cleaned)
+                const json = tryParseJSON(text);
+                if (json) {
+                    foundInThisUrl = findNodesRecursively(json);
                 }
 
-                // 2. If JSON found nothing, or text looks like base64/list
+                // 2. If JSON failed or yielded nothing, try Regex/Base64
                 if (foundInThisUrl.length === 0) {
                     let decoded = text;
                     if (!text.includes(' ') && !text.includes('\n') && text.length > 20) {
@@ -293,7 +292,7 @@ async function fetchAndParseAll(urls) {
         await Promise.all(promises);
     }
 
-    // Deduplicate based on Link
+    // Deduplicate
     const unique = new Map();
     nodes.forEach(n => {
         if(n.l && !unique.has(n.l)) unique.set(n.l, n);
@@ -301,46 +300,64 @@ async function fetchAndParseAll(urls) {
     return Array.from(unique.values());
 }
 
+// Safe JSON parser that strips comments
+function tryParseJSON(str) {
+    try {
+        return JSON.parse(str);
+    } catch (e) {
+        try {
+            // Strip // and /* */ comments
+            const clean = str.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
+            return JSON.parse(clean);
+        } catch (e2) {
+            return null;
+        }
+    }
+}
+
 function findNodesRecursively(obj) {
     let results = [];
     if (!obj || typeof obj !== 'object') return results;
 
-    // --- Critical Fix: Explicitly handle Container Arrays first ---
-    // Sing-box uses 'outbounds', Clash uses 'proxies'
+    // --- Container Arrays ---
+    // We do NOT return early anymore, we check everything.
     if (Array.isArray(obj.outbounds)) {
         obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
-        return results;
     }
     if (Array.isArray(obj.proxies)) {
         obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
-        return results;
     }
-
-    // --- Case A: Xray/V2Ray Nested Servers ---
-    if (obj.protocol && obj.settings && (obj.settings.vnext || obj.settings.servers)) {
+    
+    // --- Xray/V2Ray Nested ---
+    if (obj.settings && (obj.settings.vnext || obj.settings.servers)) {
         const target = obj.settings.vnext || obj.settings.servers;
         if (Array.isArray(target)) {
             target.forEach(v => {
                 const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
                 if (subNode) results.push(subNode);
             });
-            return results;
         }
     }
 
-    // --- Case B: Direct Node Object ---
+    // --- Direct Node Check ---
     const node = parseFlatNode(obj);
     if (node) {
         results.push(node);
-        return results; 
+        // Don't stop recursion even if found, though usually leaf nodes don't have children
     }
 
-    // --- Case C: General Recursion (fallback) ---
+    // --- General Recursion ---
     if (Array.isArray(obj)) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
-        Object.values(obj).forEach(val => results.push(...findNodesRecursively(val)));
+        Object.keys(obj).forEach(key => {
+            // Skip huge string fields to save CPU
+            if (key !== 'body' && key !== 'data') {
+                 results.push(...findNodesRecursively(obj[key]));
+            }
+        });
     }
+    
     return results;
 }
 
@@ -348,7 +365,6 @@ function getProp(obj, keys) {
     if (!Array.isArray(keys)) keys = [keys];
     const objKeys = Object.keys(obj);
     for (const k of keys) {
-        // Strict match then case-insensitive match
         if (obj[k] !== undefined) return obj[k];
         const found = objKeys.find(ok => ok.toLowerCase() === k.toLowerCase());
         if (found) return obj[found];
@@ -357,12 +373,10 @@ function getProp(obj, keys) {
 }
 
 function parseFlatNode(ob) {
-    // 1. Determine Address/Port
-    // Sing-box uses 'server_port', Clash uses 'port'
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
     let port = getProp(ob, ['server_port', 'port']);
 
-    // Handle "host:port" strings
+    // Handle host:port
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
         if (parts.length === 2 && !isNaN(parts[1])) {
@@ -373,7 +387,6 @@ function parseFlatNode(ob) {
     
     if (!server || !port) return null;
 
-    // 2. Determine Type
     let type = getProp(ob, ['type', 'protocol', 'network']);
     type = (type || '').toLowerCase();
     
@@ -384,19 +397,18 @@ function parseFlatNode(ob) {
         else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
     }
 
-    // Disambiguate VLESS/VMess
     if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
 
-    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field'].includes(type)) return null;
+    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
 
     const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
     const uuid = getProp(ob, ['uuid', 'id', 'user_id']);
     
-    // TLS
     const tlsObj = getProp(ob, ['tls']) || {};
     const isTls = tlsObj === true || tlsObj.enabled === true || getProp(ob, ['tls']) === true;
     const sni = getProp(tlsObj, ['server_name', 'sni']) || getProp(ob, ['sni', 'servername', 'host']);
-    const insecure = getProp(tlsObj, ['insecure']) || getProp(ob, ['insecure', 'skip-cert-verify']) ? '1' : '0';
+    // Hysteria2 sometimes uses ignore_insecure
+    const insecure = (getProp(tlsObj, ['insecure', 'ignore_insecure']) || getProp(ob, ['insecure', 'skip-cert-verify'])) ? '1' : '0';
     
     try {
         // --- Hysteria 2 ---
@@ -405,30 +417,30 @@ function parseFlatNode(ob) {
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('insecure', '1');
-            // Singbox might use 'obfs' object
+            
+            // Singbox obfs
             const obfs = getProp(ob, ['obfs']);
-            if (obfs && obfs.password) params.set('obfs', obfs.password);
+            if (obfs && typeof obfs === 'object') {
+                 if (obfs.type === 'salamander') params.set('obfs', 'salamander');
+                 if (obfs.password) params.set('obfs-password', obfs.password);
+            }
 
             return { l: `hysteria2://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
         }
 
         // --- Hysteria 1 ---
-        // Crucial Fix: Singbox uses 'up_mbps'/'down_mbps' and 'auth_str'
         if (type === 'hysteria') {
             const params = new URLSearchParams();
             params.set('peer', sni || server);
             if (insecure === '1') params.set('insecure', '1');
             
-            const up = getProp(ob, ['up', 'up_mbps']) || '100'; // Default to 100 if missing
+            const up = getProp(ob, ['up', 'up_mbps']) || '100'; 
             const down = getProp(ob, ['down', 'down_mbps']) || '100';
             params.set('up', up);
             params.set('down', down);
             
             const auth = getProp(ob, ['auth', 'auth_str', 'password']);
             if (auth) params.set('auth', auth);
-            
-            const alpn = getProp(ob, ['alpn']); // Array or string
-            if (alpn) params.set('alpn', Array.isArray(alpn) ? alpn[0] : alpn);
             
             const protocol = getProp(ob, ['protocol']);
             if (protocol) params.set('protocol', protocol);
@@ -458,6 +470,10 @@ function parseFlatNode(ob) {
             
             const serviceName = getProp(transport, ['service_name']) || getProp(ob, ['serviceName', 'grpc-service-name']);
             if (serviceName) params.set('serviceName', serviceName);
+            
+            // Vision / Flow
+            const flow = getProp(ob, ['flow']);
+            if (flow) params.set('flow', flow);
 
             // Reality
             const reality = getProp(tlsObj, ['reality']) || getProp(ob, ['reality']);
