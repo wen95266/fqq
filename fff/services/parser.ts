@@ -247,7 +247,7 @@ const parseStandardLinks = (text: string): ProxyNode[] => {
 const extractLinksRegex = (text: string): ProxyNode[] => {
     const nodes: ProxyNode[] = [];
     // 允许 URL 包含更多特殊字符，并支持 # 后的注释
-    const regex = /(vmess|vless|trojan|ss|hysteria2|tuic):\/\/[^\s"',;]+/g;
+    const regex = /(vmess|vless|trojan|ss|hysteria2|hysteria|hy2|tuic):\/\/[^\s"',;]+/g;
     const matches = text.match(regex);
 
     if (matches) {
@@ -264,6 +264,9 @@ const extractLinksRegex = (text: string): ProxyNode[] => {
             else if (cleanLink.startsWith('trojan://')) protocol = ProtocolType.TROJAN;
             else if (cleanLink.startsWith('ss://')) protocol = ProtocolType.SHADOWSOCKS;
             else if (cleanLink.startsWith('hysteria2://')) protocol = ProtocolType.HYSTERIA2;
+            else if (cleanLink.startsWith('hysteria://')) protocol = ProtocolType.HYSTERIA;
+            else if (cleanLink.startsWith('hy2://')) protocol = ProtocolType.HYSTERIA2;
+            else if (cleanLink.startsWith('tuic://')) protocol = ProtocolType.TUIC;
 
             if (protocol !== ProtocolType.UNKNOWN) {
                  nodes.push({
@@ -329,13 +332,13 @@ const constructLink = (n: ProxyNode): string => {
           const params = new URLSearchParams();
           if (n.host) params.set('sni', n.host);
           params.set('insecure', '1');
-          return `hysteria2://${n.password}@${n.address}:${n.port}?${params.toString()}#${encodeURIComponent(n.name)}`;
+          return `hysteria2://${encodeURIComponent(n.password || '')}@${n.address}:${n.port}?${params.toString()}#${encodeURIComponent(n.name)}`;
       }
       
       if (n.protocol === ProtocolType.TROJAN) {
           const params = new URLSearchParams();
           if (n.host) params.set('sni', n.host);
-          return `trojan://${n.password}@${n.address}:${n.port}?${params.toString()}#${encodeURIComponent(n.name)}`;
+          return `trojan://${encodeURIComponent(n.password || '')}@${n.address}:${n.port}?${params.toString()}#${encodeURIComponent(n.name)}`;
       }
 
       if (n.protocol === ProtocolType.SHADOWSOCKS) {
