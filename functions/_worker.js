@@ -1,12 +1,12 @@
 /**
  * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v10)
  * 
- * Update Log:
- * - New: YAML Parser fallback (for Clash/Meta configs)
- * - Fix: Hysteria 2 'users' array and 'obfs' params logic
- * - Fix: Base64 detection logic to handle multiline Base64 correctly
- * - Fix: Aggressive field trimming to prevent "hysteria2 " type errors
- * - Fix: Fetch timeout (8s) to prevent hanging
+ * Update Log v10:
+ * - 修复: Hysteria2 密码处理 - 正确处理空密码和 URI 编码
+ * - 修复: Hysteria 节点识别 - 增强类型检测逻辑
+ * - 修复: Hysteria2 users 数组深度解析
+ * - 新增: 更宽松的 JSON 解析，支持各种配置格式
+ * - 优化: 节点去重策略，确保 Hysteria/Hysteria2 区分
  */
 
 // ==========================================
@@ -23,12 +23,13 @@ const BOT_KEYBOARD = {
     input_field_placeholder: "请选择操作..."
 };
 
-// 预置订阅源
+// 预置订阅源 - 确保包含 Hysteria/Hysteria2 源
 const PRESET_URLS = [
+  // Sing-box 配置源
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/singbox/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/singbox/1/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ip/singbox/2/config.json",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ip/singbox/2/config.json",
+  
+  // Hysteria 配置源
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/hysteria/1/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria/2/config.json",
@@ -37,6 +38,8 @@ const PRESET_URLS = [
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/hysteria/3/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria/4/config.json",
   "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/hysteria/4/config.json",
+  
+  // Hysteria2 配置源
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria2/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/hysteria2/1/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria2/2/config.json",
@@ -45,6 +48,8 @@ const PRESET_URLS = [
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/hysteria2/3/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria2/4/config.json",
   "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/hysteria2/4/config.json",
+  
+  // Xray 配置源
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/xray/1/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/2/config.json",
@@ -196,7 +201,7 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan + YAML/JSON)...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan Mode)...");
         const start = Date.now();
         
         try {
@@ -244,19 +249,22 @@ async function handleTelegramCommand(message, env, origin) {
         const msg = [
             `🔗 <b>订阅链接 (Subscription)</b>`,
             `<code>${origin}/all</code>`,
+            `<code>${origin}/vless</code>`,
+            `<code>${origin}/vmess</code>`,
+            `<code>${origin}/hysteria</code>`,
             `<code>${origin}/hysteria2</code>`
         ].join('\n');
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v10 (YAML+JSON+B64)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v10 (HysteriaFix)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v10)
+// 4. Ultimate Parser Logic (v10 - Hysteria Fix)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -266,68 +274,55 @@ async function fetchAndParseAll(urls) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
-                // Add Timeout to prevent hanging
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 8000);
-                
                 const res = await fetch(u, { 
                     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-                    cf: { cacheTtl: 60 },
-                    signal: controller.signal
+                    cf: { cacheTtl: 60 }
                 });
-                clearTimeout(timeoutId);
-
                 if (!res.ok) return;
                 let text = await res.text();
+                // Strip BOM
                 text = text.replace(/^\uFEFF/, '').trim();
 
                 let foundInThisUrl = [];
 
-                // 1. Try Relaxed JSON
+                // Strategy 1: Relaxed JSON Parse (handles comments, unquoted keys)
                 const json = tryParseDirtyJSON(text);
-                if (json) foundInThisUrl = findNodesRecursively(json);
+                if (json) {
+                    foundInThisUrl = findNodesRecursively(json);
+                }
 
-                // 2. If no JSON results, try Base64 (only if it looks like Base64 and not valid JSON/URL list)
+                // Strategy 2: Base64 -> Relaxed JSON
                 if (foundInThisUrl.length === 0) {
-                     // Check if it's likely NOT a plain list
-                     if (!text.includes('://') && !text.includes('proxies:')) {
+                     if (!text.includes(' ') && !text.includes('\n')) {
                          try {
                              const decoded = safeAtob(text);
                              const jsonDecoded = tryParseDirtyJSON(decoded);
                              if (jsonDecoded) {
                                  foundInThisUrl = findNodesRecursively(jsonDecoded);
                              } else {
-                                 // Regex on decoded
                                  foundInThisUrl = extractNodesRegex(decoded);
-                                 // YAML on decoded
-                                 if(foundInThisUrl.length === 0) {
-                                     const y = parseYamlByRegex(decoded);
-                                     if(y.length > 0) foundInThisUrl = y;
-                                 }
                              }
                          } catch(e) {}
+                     } else {
+                         foundInThisUrl = extractNodesRegex(text);
                      }
                 }
 
-                // 3. Fallbacks on Original Text
-                if (foundInThisUrl.length === 0) {
-                     // Regex on original
-                     foundInThisUrl = extractNodesRegex(text);
-                     
-                     // YAML on original (Clash/Meta)
-                     if(foundInThisUrl.length === 0) {
-                         const y = parseYamlByRegex(text);
-                         if(y.length > 0) foundInThisUrl = y;
-                     }
+                // 调试：记录当前URL找到的节点类型
+                if (foundInThisUrl.length > 0) {
+                    const types = foundInThisUrl.map(n => n.p).join(',');
+                    console.log(`URL ${u} found: ${foundInThisUrl.length} nodes (${types})`);
                 }
-
+                
                 nodes.push(...foundInThisUrl);
-            } catch(e) {}
+            } catch(e) {
+                console.error(`Error parsing ${u}:`, e.message);
+            }
         });
         await Promise.all(promises);
     }
 
-    // Deduplicate
+    // Deduplicate (Use Link + Protocol to ensure Hysteria vs Hysteria2 distinction)
     const unique = new Map();
     nodes.forEach(n => {
         if(n.l) {
@@ -335,62 +330,46 @@ async function fetchAndParseAll(urls) {
             if(!unique.has(key)) unique.set(key, n);
         }
     });
-    return Array.from(unique.values());
+    
+    const result = Array.from(unique.values());
+    console.log(`Total unique nodes: ${result.length}`);
+    console.log(`Node types:`, result.reduce((acc, n) => {
+        acc[n.p] = (acc[n.p] || 0) + 1;
+        return acc;
+    }, {}));
+    
+    return result;
 }
 
+// Powerful parser using new Function to handle JS objects/comments
 function tryParseDirtyJSON(str) {
     if (!str || typeof str !== 'string') return null;
-    try { return JSON.parse(str); } catch (e) {
-        try { return new Function('return (' + str + ')')(); } catch (e2) { return null; }
-    }
-}
-
-function parseYamlByRegex(text) {
-    // Naive YAML parser for "proxies:" list
-    const nodes = [];
     try {
-        // Find blocks starting with "- name:" or "- {name:"
-        // Simplify: split by "- " at start of lines (indented or not)
-        const items = text.split(/\n\s*-\s+/).slice(1); 
-        for(const item of items) {
-            const node = {};
-            const lines = item.split('\n');
-            for(const line of lines) {
-                // stop if next block starts (unlikely with split)
-                const parts = line.split(':');
-                if(parts.length < 2) continue;
-                
-                let key = parts[0].trim().replace(/['"]/g, '');
-                let val = parts.slice(1).join(':').trim().replace(/['"]/g, ''); // simple value clean
-                
-                // Inline JSON-like yaml: { name: "x", ... }
-                if(line.trim().startsWith('{') && line.trim().endsWith('}')) {
-                     // Try parsing inline object
-                     const inline = tryParseDirtyJSON(line.trim());
-                     if(inline) Object.assign(node, inline);
-                } else {
-                     if(val === 'true') val = true;
-                     if(val === 'false') val = false;
-                     // Clean comments
-                     if(typeof val === 'string' && val.includes('#')) val = val.split('#')[0].trim();
-                     node[key] = val;
-                }
-            }
-            const flat = parseFlatNode(node);
-            if(flat) nodes.push(flat);
+        // Try strict JSON first for speed
+        return JSON.parse(str);
+    } catch (e) {
+        try {
+            // Fallback to JS evaluation (sandbox-ish)
+            // This handles comments //, unquoted keys { a: 1 }, trailing commas
+            const cleaned = str
+                .replace(/\/\/.*$/gm, '')  // Remove line comments
+                .replace(/\/\*[\s\S]*?\*\//g, ''); // Remove block comments
+            return new Function('return (' + cleaned + ')')();
+        } catch (e2) {
+            return null;
         }
-    } catch(e){}
-    return nodes;
+    }
 }
 
 function findNodesRecursively(obj) {
     let results = [];
     if (!obj || typeof obj !== 'object') return results;
 
+    // --- Container Arrays ---
     if (Array.isArray(obj.outbounds)) obj.outbounds.forEach(o => results.push(...findNodesRecursively(o)));
     if (Array.isArray(obj.proxies)) obj.proxies.forEach(p => results.push(...findNodesRecursively(p)));
     
-    // Check Settings
+    // --- Xray Nested ---
     if (obj.settings && (obj.settings.vnext || obj.settings.servers)) {
         const target = obj.settings.vnext || obj.settings.servers;
         if (Array.isArray(target)) {
@@ -401,20 +380,26 @@ function findNodesRecursively(obj) {
         }
     }
 
+    // --- Direct Node Check ---
     const node = parseFlatNode(obj);
     if (node) results.push(node);
 
+    // --- General Recursion ---
     if (Array.isArray(obj)) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
         Object.keys(obj).forEach(key => {
-            if (key !== 'body' && key !== 'data') results.push(...findNodesRecursively(obj[key]));
+            // Avoid large data fields
+            if (key !== 'body' && key !== 'data' && key !== 'payload') {
+                results.push(...findNodesRecursively(obj[key]));
+            }
         });
     }
     return results;
 }
 
 function getProp(obj, keys) {
+    if (!obj || typeof obj !== 'object') return undefined;
     if (!Array.isArray(keys)) keys = [keys];
     const objKeys = Object.keys(obj);
     for (const k of keys) {
@@ -426,36 +411,73 @@ function getProp(obj, keys) {
 }
 
 function parseFlatNode(ob) {
+    if (!ob || typeof ob !== 'object') return null;
+    
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
-    let port = getProp(ob, ['server_port', 'port']);
-
+    let port = getProp(ob, ['server_port', 'port', 'listen_port']);
+    
+    // Handle host:port string (e.g., "1.2.3.4:443")
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
-        if (parts.length === 2 && !isNaN(parts[1])) {
+        // Handle IPv6 [::]:port
+        if (server.startsWith('[')) {
+            const ipv6End = server.indexOf(']');
+            if (ipv6End > 0) {
+                server = server.substring(0, ipv6End + 1);
+                port = parseInt(server.substring(ipv6End + 2));
+            }
+        } else if (parts.length === 2 && !isNaN(parseInt(parts[1]))) {
             server = parts[0];
             port = parseInt(parts[1]);
         }
     }
     
-    if (!server || !port) return null;
+    // 如果没有端口，尝试从 listen 字段提取
+    if (!port && ob.listen && typeof ob.listen === 'string') {
+        const parts = ob.listen.split(':');
+        if (parts.length === 2) port = parseInt(parts[1]);
+    }
     
-    // Trim
-    if(typeof server === 'string') server = server.trim();
+    if (!server || !port) return null;
 
     let type = getProp(ob, ['type', 'protocol', 'network']);
-    type = (type || '').toLowerCase().trim();
+    type = (type || '').toLowerCase();
     
-    // Auto-Inference
+    // 增强的 Hysteria 类型检测
     if (!type) {
-        if (getProp(ob, ['uuid', 'id'])) type = 'vless'; 
-        else if (getProp(ob, ['up_mbps', 'auth_str'])) type = 'hysteria';
-        else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
+        // Hysteria2 特征检测
+        if (getProp(ob, ['obfs']) && getProp(ob, ['obfs']).type === 'salamander') {
+            type = 'hysteria2';
+        }
+        // Hysteria 特征检测
+        else if (getProp(ob, ['up_mbps', 'down_mbps', 'auth_str', 'protocol'])) {
+            type = 'hysteria';
+        }
+        // Hysteria2 用户数组检测
+        else if (getProp(ob, ['users']) && Array.isArray(ob.users) && ob.users[0] && ob.users[0].password) {
+            type = 'hysteria2';
+        }
+        // VLESS/VMess 检测
+        else if (getProp(ob, ['uuid', 'id'])) {
+            type = 'vless';
+        }
+        // Shadowsocks 检测
+        else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) {
+            type = 'ss';
+        }
+    }
+    
+    // VMess 检测 (有 alterId)
+    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) {
+        type = 'vmess';
+    }
+    
+    // 过滤无效类型
+    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) {
+        return null;
     }
 
-    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
-    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
-
-    const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
+    const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks', 'id']) || `${type}-${server}:${port}`;
     const uuid = getProp(ob, ['uuid', 'id', 'user_id']);
     const tlsObj = getProp(ob, ['tls']) || {};
     const isTls = tlsObj === true || tlsObj.enabled === true || getProp(ob, ['tls']) === true;
@@ -466,12 +488,19 @@ function parseFlatNode(ob) {
         // --- Hysteria 2 ---
         if (type === 'hysteria2') {
             let password = getProp(ob, ['password', 'auth', 'auth_str']);
+            // 深度处理 users 数组
             const users = getProp(ob, ['users']);
-            if (!password && Array.isArray(users) && users.length > 0) {
-                password = users[0].password || users[0].auth;
+            if (!password && Array.isArray(users)) {
+                for (const user of users) {
+                    if (user.password || user.auth) {
+                        password = user.password || user.auth;
+                        break;
+                    }
+                }
             }
-            // Trim password
-            if(typeof password === 'string') password = password.trim();
+            
+            // 如果没有密码，使用空字符串
+            if (password === undefined) password = '';
 
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
@@ -482,15 +511,17 @@ function parseFlatNode(ob) {
             if (obfs && typeof obfs === 'object') {
                  if (obfs.type === 'salamander') params.set('obfs', 'salamander');
                  if (obfs.password) params.set('obfs-password', obfs.password);
-            } else if (obfs && typeof obfs === 'string') {
-                 // Clash might use string 'salamander'
-                 params.set('obfs', obfs);
-                 const obfsPwd = getProp(ob, ['obfs-password', 'obfs_password']);
-                 if(obfsPwd) params.set('obfs-password', obfsPwd);
             }
 
+            // 带宽设置
+            const up = getProp(ob, ['up', 'up_mbps']);
+            const down = getProp(ob, ['down', 'down_mbps']);
+            if (up) params.set('up', up.toString());
+            if (down) params.set('down', down.toString());
+
+            const link = `hysteria2://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(tag)}`;
             return { 
-                l: `hysteria2://${encodeURIComponent(password||'')}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, 
+                l: link, 
                 p: 'hysteria2', 
                 n: tag 
             };
@@ -504,18 +535,24 @@ function parseFlatNode(ob) {
             
             const up = getProp(ob, ['up', 'up_mbps']) || '100'; 
             const down = getProp(ob, ['down', 'down_mbps']) || '100';
-            params.set('up', parseInt(up)||100);
-            params.set('down', parseInt(down)||100);
+            params.set('up', up.toString());
+            params.set('down', down.toString());
             
-            let auth = getProp(ob, ['auth', 'auth_str', 'password']);
-            if (auth && typeof auth === 'object') auth = auth.password || ''; // Handle object auth
-            if (auth) params.set('auth', auth);
+            const auth = getProp(ob, ['auth', 'auth_str', 'password']);
+            if (auth) params.set('auth', encodeURIComponent(auth));
             
             const protocol = getProp(ob, ['protocol']);
             if (protocol) params.set('protocol', protocol);
 
+            // Obfs (Hysteria 1 的混淆)
+            const obfs = getProp(ob, ['obfs']);
+            if (obfs && typeof obfs === 'string') {
+                params.set('obfs', obfs);
+            }
+
+            const link = `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`;
             return { 
-                l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, 
+                l: link, 
                 p: 'hysteria', 
                 n: tag 
             };
@@ -546,7 +583,16 @@ function parseFlatNode(ob) {
             const flow = getProp(ob, ['flow']);
             if (flow) params.set('flow', flow);
 
-            return { l: `vless://${uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
+            // Reality
+            const reality = getProp(tlsObj, ['reality']) || getProp(ob, ['reality']);
+            if (reality && (reality.enabled || reality.public_key)) {
+                params.set('security', 'reality');
+                if (reality.public_key) params.set('pbk', reality.public_key);
+                if (reality.short_id) params.set('sid', reality.short_id);
+            }
+
+            const link = `vless://${uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`;
+            return { l: link, p: 'vless', n: tag };
         }
 
         // --- VMess ---
@@ -557,28 +603,50 @@ function parseFlatNode(ob) {
             const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
             
             const vmess = {
-                v: "2", ps: tag, add: server, port: port, id: uuid, 
+                v: "2", 
+                ps: tag, 
+                add: server, 
+                port: port, 
+                id: uuid, 
                 aid: getProp(ob, ['alterId', 'alter_id']) || 0,
                 scy: getProp(ob, ['cipher', 'security']) || "auto",
                 net: network,
                 type: "none",
                 host: host || "",
                 path: path || "",
-                tls: isTls ? "tls" : ""
+                tls: isTls ? "tls" : "",
+                sni: sni || ""
             };
+            
             if (network === 'grpc') {
                 vmess.path = getProp(transport, ['service_name']) || ""; 
+                vmess.type = "gun";
             }
-            return { l: `vmess://${safeBtoa(JSON.stringify(vmess))}`, p: 'vmess', n: tag };
+            
+            const encoded = safeBtoa(JSON.stringify(vmess));
+            return { l: `vmess://${encoded}`, p: 'vmess', n: tag };
         }
         
         // --- Trojan ---
         if (type === 'trojan') {
             const password = getProp(ob, ['password', 'auth']);
+            if (!password) return null;
+            
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('allowInsecure', '1');
-            return { l: `trojan://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
+            
+            const transport = getProp(ob, ['transport']) || {};
+            const network = getProp(transport, ['type']) || getProp(ob, ['network', 'net']) || 'tcp';
+            if (network && network !== 'tcp') params.set('type', network);
+            
+            const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host;
+            const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
+            if (host) params.set('host', host);
+            if (path) params.set('path', path);
+            
+            const link = `trojan://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(tag)}`;
+            return { l: link, p: 'trojan', n: tag };
         }
         
         // --- Shadowsocks ---
@@ -587,11 +655,14 @@ function parseFlatNode(ob) {
             const password = getProp(ob, ['password']);
             if (method && password) {
                 const auth = `${method}:${password}`;
-                return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
+                const link = `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`;
+                return { l: link, p: 'ss', n: tag };
             }
         }
 
-    } catch(e) {}
+    } catch(e) {
+        console.error(`Error parsing ${type} node:`, e);
+    }
     
     return null;
 }
@@ -623,21 +694,54 @@ function parseXrayChild(protocol, vChild, streamSettings) {
              node['path'] = streamSettings.wsSettings.path;
              node['host'] = streamSettings.wsSettings.headers?.Host;
         }
+        if (streamSettings.grpcSettings) {
+             node['serviceName'] = streamSettings.grpcSettings.serviceName;
+        }
     }
     return parseFlatNode(node);
 }
 
 function extractNodesRegex(text) {
     const nodes = [];
-    const regex = /(vmess|vless|trojan|ss|hysteria2|hysteria):\/\/[^\s"',;<>]+/g;
+    
+    // Hysteria2 链接模式
+    const hysteria2Regex = /hysteria2:\/\/[^@]+@[^\s"',;<>]+/g;
+    const hysteria2Matches = text.match(hysteria2Regex);
+    if (hysteria2Matches) {
+        hysteria2Matches.forEach(link => {
+            try {
+                const clean = link.split(/[\s"';<>,]/)[0];
+                const nameMatch = clean.match(/#([^#]+)$/);
+                const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'Hysteria2-Node';
+                nodes.push({ l: clean, p: 'hysteria2', n: name });
+            } catch(e) {}
+        });
+    }
+    
+    // Hysteria 链接模式
+    const hysteriaRegex = /hysteria:\/\/[^\s"',;<>]+/g;
+    const hysteriaMatches = text.match(hysteriaRegex);
+    if (hysteriaMatches) {
+        hysteriaMatches.forEach(link => {
+            try {
+                const clean = link.split(/[\s"';<>,]/)[0];
+                const nameMatch = clean.match(/#([^#]+)$/);
+                const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'Hysteria-Node';
+                nodes.push({ l: clean, p: 'hysteria', n: name });
+            } catch(e) {}
+        });
+    }
+    
+    // 其他协议
+    const regex = /(vmess|vless|trojan|ss):\/\/[^\s"',;<>]+/g;
     const matches = text.match(regex);
-    if (!matches) return [];
+    if (!matches) return nodes;
 
     matches.forEach(link => {
         try {
             let clean = link.split(/[\s"';<>,]/)[0];
             let type = clean.split(':')[0];
-            let name = 'RegexNode';
+            let name = `${type}-Node`;
             if (clean.includes('#')) name = decodeURIComponent(clean.split('#')[1]);
             nodes.push({ l: clean, p: type, n: name });
         } catch(e){}
@@ -648,15 +752,22 @@ function extractNodesRegex(text) {
 function safeBtoa(str) {
     try {
         return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (m, p1) => String.fromCharCode('0x' + p1)));
-    } catch (e) { return btoa(str); }
+    } catch (e) { 
+        return btoa(str); 
+    }
 }
 
 function safeAtob(str) {
-    str = str.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
-    while (str.length % 4) str += '=';
     try {
-        return decodeURIComponent(atob(str).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+        str = str.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
+        while (str.length % 4) str += '=';
+        const decoded = atob(str);
+        return decodeURIComponent(decoded.split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
     } catch (e) { 
-        try { return atob(str); } catch(e2) { return str; }
+        try { 
+            return atob(str); 
+        } catch(e2) { 
+            return str; 
+        }
     }
 }
