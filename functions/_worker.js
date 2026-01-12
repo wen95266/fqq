@@ -1,10 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v2)
  * 
  * 功能:
  * 1. 自动抓取节点并存储到 KV
  * 2. 提供订阅接口 (Base64编码)
- * 3. Telegram Bot 管理 (带键盘菜单)
+ * 3. Telegram Bot 管理
+ * 4. 支持 Sing-box, Xray, V2Ray, Clash 等多种 JSON 结构
  */
 
 // ==========================================
@@ -21,6 +22,7 @@ const BOT_KEYBOARD = {
     input_field_placeholder: "请选择操作..."
 };
 
+// 预置订阅源
 const PRESET_URLS = [
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/singbox/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/singbox/1/config.json",
@@ -86,7 +88,7 @@ export default {
         if (update.message && update.message.text) {
              const chatId = String(update.message.from.id);
              if (env.ADMIN_ID && chatId !== String(env.ADMIN_ID)) {
-                 // 可选：允许所有人使用订阅查询，限制管理功能
+                 // 简单鉴权
              }
              ctx.waitUntil(handleTelegramCommand(update.message, env, url.origin));
         }
@@ -118,7 +120,7 @@ export default {
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
-    // Auto-detect type from URL
+    // Auto-detect type
     ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash'].forEach(t => {
         if (pathPart.includes(t)) targetType = t;
     });
@@ -134,14 +136,14 @@ export default {
 
     let filteredNodes = nodesData;
     if (targetType && targetType !== 'all') {
-      // Allow searching for multiple types e.g. "hysteria,hysteria2"
       const types = targetType.split(',').map(t => t.trim());
-      // Special handling for "hysteria" matching both v1 and v2 if needed, but here we match exactly what we parsed
-      filteredNodes = nodesData.filter(node => types.some(t => node.p === t || (t==='hysteria' && node.p==='hysteria2'))); 
+      // Special match: "hysteria" matches both "hysteria" and "hysteria2" if needed, 
+      // but here we stick to strict type matching unless it's "all"
+      filteredNodes = nodesData.filter(node => types.some(t => node.p === t)); 
     }
 
-    // Filter out invalid nodes
-    filteredNodes = filteredNodes.filter(n => n.l && n.l.startsWith(n.p));
+    // Loose filter: Ensure we have a link and a protocol
+    filteredNodes = filteredNodes.filter(n => n.l && n.p);
 
     const links = filteredNodes.map(n => n.l).join('\n');
     const encoded = safeBtoa(links);
@@ -181,7 +183,7 @@ async function handleTelegramCommand(message, env, origin) {
 
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ KV 未绑定`);
-        await send("⏳ 正在全力抓取节点...");
+        await send("⏳ 正在全力抓取节点 (支持 Xray/Singbox/Clash)...");
         const start = Date.now();
         
         try {
@@ -213,27 +215,28 @@ async function handleTelegramCommand(message, env, origin) {
 }
 
 // ==========================================
-// 4. Advanced Parser Logic
+// 4. Ultimate Parser Logic
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    // Increase batch size slightly
-    const BATCH_SIZE = 8;
+    // Increase batch size
+    const BATCH_SIZE = 10;
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
+                // Randomize User-Agent slightly to avoid static blocking
                 const res = await fetch(u, { 
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' },
                     cf: { cacheTtl: 60 }
                 });
                 if (!res.ok) return;
                 let text = await res.text();
                 text = text.trim();
 
-                // Strategy 1: JSON Recursion (Sing-box, Xray, etc)
                 let jsonNodes = [];
+                // Strategy 1: Smart JSON Parse
                 if (text.startsWith('{') || text.startsWith('[')) {
                     try {
                         const json = JSON.parse(text);
@@ -244,7 +247,7 @@ async function fetchAndParseAll(urls) {
                 if (jsonNodes.length > 0) {
                     nodes.push(...jsonNodes);
                 } else {
-                    // Strategy 2: Base64 Decode + Regex
+                    // Strategy 2: Base64/Regex
                     let decoded = text;
                     if (!text.includes(' ') && text.length > 50) {
                         try { decoded = safeAtob(text); } catch(e) {}
@@ -257,7 +260,7 @@ async function fetchAndParseAll(urls) {
         await Promise.all(promises);
     }
 
-    // Deduplicate by Link
+    // Deduplicate
     const unique = new Map();
     nodes.forEach(n => {
         if(n.l && !unique.has(n.l)) unique.set(n.l, n);
@@ -265,110 +268,139 @@ async function fetchAndParseAll(urls) {
     return Array.from(unique.values());
 }
 
-// Recursive search for proxy objects in JSON
 function findNodesRecursively(obj) {
     let results = [];
-    if (!obj) return results;
+    if (!obj || typeof obj !== 'object') return results;
 
-    if (Array.isArray(obj)) {
-        obj.forEach(item => results.push(...findNodesRecursively(item)));
+    // --- Case A: Xray/V2Ray structure (protocol + settings.vnext/servers) ---
+    if (obj.protocol && obj.settings) {
+        if (obj.settings.vnext && Array.isArray(obj.settings.vnext)) {
+            // VLESS / VMess
+            obj.settings.vnext.forEach(v => {
+                const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
+                if (subNode) results.push(subNode);
+            });
+            return results; // Stop searching this branch
+        }
+        if (obj.settings.servers && Array.isArray(obj.settings.servers)) {
+            // Shadowsocks / Trojan
+            obj.settings.servers.forEach(v => {
+                const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
+                if (subNode) results.push(subNode);
+            });
+            return results; // Stop searching this branch
+        }
+    }
+
+    // --- Case B: Standard Sing-box / Flat Object ---
+    const node = parseFlatNode(obj);
+    if (node) {
+        results.push(node);
         return results;
     }
 
-    if (typeof obj === 'object') {
-        // Check if this object is a proxy node
-        const node = parseSingleNode(obj);
-        if (node) {
-            results.push(node);
-        } else {
-            // If not a node, search its children (e.g. "outbounds", "proxies", "selector")
-            Object.values(obj).forEach(val => results.push(...findNodesRecursively(val)));
-        }
+    // --- Case C: Recursion ---
+    if (Array.isArray(obj)) {
+        obj.forEach(item => results.push(...findNodesRecursively(item)));
+    } else {
+        Object.values(obj).forEach(val => results.push(...findNodesRecursively(val)));
     }
     return results;
 }
 
-function parseSingleNode(ob) {
-    if (!ob.type || !ob.server || !ob.server_port) return null;
-    
-    // Filter out internal types
-    if (['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'ipv4', 'ipv6'].includes(ob.type)) return null;
+// Parse "Flat" nodes (Sing-box, Clash, Hysteria root objects)
+function parseFlatNode(ob) {
+    // 1. Determine Type
+    const type = (ob.type || ob.protocol || '').toLowerCase();
+    if (!type) return null;
 
-    const tag = ob.tag || `Node-${Math.floor(Math.random()*10000)}`;
-    const port = ob.server_port;
-    const server = ob.server;
+    // 2. Determine Address/Port
+    const server = ob.server || ob.address || ob.ip;
+    const port = ob.server_port || ob.port;
     
+    if (!server || !port) return null;
+    
+    // Ignore invalid types
+    if (['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'ipv4', 'ipv6', 'field'].includes(type)) return null;
+
+    const tag = ob.tag || ob.name || `Node-${Math.floor(Math.random()*10000)}`;
+
     try {
         // --- Hysteria 2 ---
-        if (ob.type === 'hysteria2') {
+        if (type === 'hysteria2') {
             const params = new URLSearchParams();
-            if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
-            if (ob.tls?.insecure) params.set('insecure', '1');
+            if (ob.tls?.server_name || ob.sni) params.set('sni', ob.tls?.server_name || ob.sni);
+            if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('insecure', '1');
             const auth = ob.password || ob.auth || '';
             return { l: `hysteria2://${auth}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
         }
 
         // --- Hysteria 1 ---
-        if (ob.type === 'hysteria') {
+        if (type === 'hysteria') {
             const params = new URLSearchParams();
-            params.set('peer', ob.tls?.server_name || ob.server_name || server); // v1 uses peer for SNI usually
-            if (ob.tls?.insecure) params.set('insecure', '1');
-            if (ob.up_mbps) params.set('up', ob.up_mbps);
-            if (ob.down_mbps) params.set('down', ob.down_mbps);
-            if (ob.auth_str) params.set('auth', ob.auth_str);
-            else if (ob.auth) params.set('auth', ob.auth);
+            params.set('peer', ob.tls?.server_name || ob.sni || server);
+            if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('insecure', '1');
+            if (ob.up_mbps || ob.up) params.set('up', ob.up_mbps || ob.up);
+            if (ob.down_mbps || ob.down) params.set('down', ob.down_mbps || ob.down);
+            if (ob.auth_str || ob.auth) params.set('auth', ob.auth_str || ob.auth);
             
             return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
         }
 
         // --- VLESS ---
-        if (ob.type === 'vless') {
+        if (type === 'vless') {
             const params = new URLSearchParams();
             params.set('encryption', 'none');
             
-            // Transport
-            const trans = ob.transport || {};
-            let net = trans.type || 'tcp';
-            if (net === 'http') { net = 'tcp'; params.set('type', 'http'); } 
-            else if (net !== 'tcp') params.set('type', net);
+            // Singbox uses `transport`, Clash uses `network`
+            const net = ob.transport?.type || ob.network || 'tcp';
+            if (net === 'http') { params.set('type', 'http'); }
+            else if (net !== 'tcp') { params.set('type', net); }
 
-            if (trans.path) params.set('path', trans.path);
-            if (trans.headers?.Host) params.set('host', trans.headers.Host);
-            if (trans.service_name) params.set('serviceName', trans.service_name);
+            // Path/Host
+            const path = ob.transport?.path || ob['ws-path'] || ob['ws-opts']?.path;
+            const host = ob.transport?.headers?.Host || ob['ws-headers']?.Host || ob['ws-opts']?.headers?.Host;
+            if (path) params.set('path', path);
+            if (host) params.set('host', host);
+            if (ob.serviceName || ob['grpc-opts']?.['grpc-service-name']) params.set('serviceName', ob.serviceName || ob['grpc-opts']?.['grpc-service-name']);
 
             // TLS
-            if (ob.tls?.enabled) {
+            if (ob.tls?.enabled || ob.tls === true) {
                 params.set('security', 'tls');
-                if (ob.tls.server_name) params.set('sni', ob.tls.server_name);
-                if (ob.tls.insecure) params.set('allowInsecure', '1');
-                if (ob.tls.alpn) params.set('alpn', ob.tls.alpn.join(','));
+                const sni = ob.tls?.server_name || ob.servername || ob.sni;
+                if (sni) params.set('sni', sni);
+                if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('allowInsecure', '1');
+                if (ob.flow) params.set('flow', ob.flow);
             }
-            // Reality (Singbox often puts reality under tls)
-            if (ob.tls?.reality?.enabled) {
+            // Reality
+            if (ob.tls?.reality?.enabled || ob.reality) {
                  params.set('security', 'reality');
-                 if(ob.tls.reality.public_key) params.set('pbk', ob.tls.reality.public_key);
-                 if(ob.tls.reality.short_id) params.set('sid', ob.tls.reality.short_id);
+                 const r = ob.tls?.reality || {};
+                 if(r.public_key) params.set('pbk', r.public_key);
+                 if(r.short_id) params.set('sid', r.short_id);
+                 if(ob.fingerprint) params.set('fp', ob.fingerprint);
             }
 
             return { l: `vless://${ob.uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
         }
 
         // --- VMess ---
-        if (ob.type === 'vmess') {
-            const trans = ob.transport || {};
-            const tls = ob.tls || {};
+        if (type === 'vmess') {
+            const net = ob.transport?.type || ob.network || "tcp";
+            const tlsObj = ob.tls || {};
+            const isTls = tlsObj.enabled || ob.tls === true;
             
             const vmess = {
                 v: "2", ps: tag, add: server, port: port, id: ob.uuid, aid: ob.alter_id || 0,
-                scy: ob.security || "auto",
-                net: trans.type || "tcp",
+                scy: ob.security || ob.cipher || "auto",
+                net: net,
                 type: "none",
-                host: tls.server_name || trans.headers?.Host || "",
-                path: trans.path || "",
-                tls: tls.enabled ? "tls" : ""
+                host: tlsObj.server_name || ob.servername || ob.sni || ob.transport?.headers?.Host || ob['ws-headers']?.Host || "",
+                path: ob.transport?.path || ob['ws-path'] || ob['ws-opts']?.path || "",
+                tls: isTls ? "tls" : ""
             };
-            if (trans.type === 'grpc') {
-                vmess.path = trans.service_name || ""; 
+            if (net === 'grpc') {
+                vmess.path = ob.transport?.service_name || ob['grpc-opts']?.['grpc-service-name'] || ""; 
                 vmess.net = "grpc";
             }
             
@@ -376,21 +408,67 @@ function parseSingleNode(ob) {
         }
 
         // --- Shadowsocks ---
-        if (ob.type === 'shadowsocks') {
-            const auth = `${ob.method}:${ob.password}`;
-            return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
+        if (type === 'shadowsocks' || type === 'ss') {
+            const method = ob.method || ob.cipher;
+            const pwd = ob.password;
+            if (method && pwd) {
+                const auth = `${method}:${pwd}`;
+                return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
+            }
         }
         
         // --- Trojan ---
-        if (ob.type === 'trojan') {
+        if (type === 'trojan') {
             const params = new URLSearchParams();
-            if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+            const sni = ob.tls?.server_name || ob.sni || ob.servername;
+            if (sni) params.set('sni', sni);
             return { l: `trojan://${ob.password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
         }
 
     } catch(e) {}
     
     return null;
+}
+
+// Handle Xray's split structure
+function parseXrayChild(protocol, vChild, streamSettings) {
+    // Merge streamSettings into a flat object for parseFlatNode
+    if (!vChild.address || !vChild.port) return null;
+    
+    const node = {
+        type: protocol,
+        server: vChild.address,
+        server_port: vChild.port,
+        tag: `Xray-${protocol}-${Math.floor(Math.random()*1000)}`,
+        ...streamSettings // Spread global stream settings (network, security, etc)
+    };
+
+    // User handling
+    if (vChild.users && vChild.users[0]) {
+        const u = vChild.users[0];
+        node.uuid = u.id;
+        node.password = u.password;
+        node.security = u.security;
+        node.alter_id = u.alterId;
+        node.method = u.method;
+    }
+    
+    // Map Xray streamSettings fields to Sing-box/Flat fields
+    if (streamSettings) {
+        node.network = streamSettings.network;
+        if (streamSettings.security === 'tls') {
+             node.tls = { enabled: true, server_name: streamSettings.tlsSettings?.serverName };
+        }
+        if (streamSettings.wsSettings) {
+             node['ws-path'] = streamSettings.wsSettings.path;
+             node['ws-headers'] = streamSettings.wsSettings.headers;
+        }
+        if (streamSettings.grpcSettings) {
+             node['grpc-opts'] = { 'grpc-service-name': streamSettings.grpcSettings.serviceName };
+        }
+    }
+    
+    return parseFlatNode(node);
 }
 
 function extractNodesRegex(text) {
