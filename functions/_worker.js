@@ -277,8 +277,9 @@ async function fetchAndParseAll(urls) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
+                // 使用 Chrome User-Agent 避免被拦截
                 const res = await fetch(u, { 
-                    headers: { 'User-Agent': 'ClashMeta/1.0' },
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
                     cf: { cacheTtl: 60 }
                 });
                 if (!res.ok) return;
@@ -346,37 +347,96 @@ function parseSingboxOutbounds(outbounds) {
     if (!Array.isArray(outbounds)) return res;
     
     outbounds.forEach(ob => {
-        if (!ob.server || !ob.server_port) return;
-        const tag = ob.tag || 'Node';
+        // 过滤 selector, urltest, direct 等非节点类型
+        if (!ob.server || !ob.server_port || !ob.type) return;
+        
+        const tag = ob.tag || `Node-${Math.floor(Math.random()*1000)}`;
         
         try {
-            // Hysteria2
-            if (ob.type === 'hysteria2') {
+            // --- VMess ---
+            if (ob.type === 'vmess') {
+                const vmessBody = {
+                    v: "2",
+                    ps: tag,
+                    add: ob.server,
+                    port: ob.server_port,
+                    id: ob.uuid,
+                    aid: ob.alter_id || 0,
+                    scy: ob.security || "auto",
+                    net: ob.transport?.type || "tcp",
+                    type: "none",
+                    host: ob.tls?.server_name || ob.transport?.headers?.Host || "",
+                    path: ob.transport?.path || "",
+                    tls: ob.tls?.enabled ? "tls" : "",
+                    sni: ob.tls?.server_name || "",
+                    alpn: ob.tls?.alpn ? ob.tls.alpn.join(',') : ""
+                };
+                
+                // 针对不同传输协议的特殊处理
+                if (ob.transport?.type === 'grpc') {
+                    vmessBody.net = "grpc";
+                    vmessBody.path = ob.transport?.service_name || "";
+                } else if (ob.transport?.type === 'ws') {
+                    vmessBody.net = "ws";
+                    vmessBody.path = ob.transport?.path || "/";
+                } else if (ob.transport?.type === 'http') {
+                    vmessBody.net = "tcp";
+                    vmessBody.type = "http";
+                }
+
+                const link = `vmess://${safeBtoa(JSON.stringify(vmessBody))}`;
+                res.push({ l: link, p: 'vmess', n: tag });
+            }
+            
+            // --- Shadowsocks ---
+            else if (ob.type === 'shadowsocks') {
+                const userInfo = `${ob.method}:${ob.password}`;
+                const link = `ss://${safeBtoa(userInfo)}@${ob.server}:${ob.server_port}#${encodeURIComponent(tag)}`;
+                res.push({ l: link, p: 'ss', n: tag });
+            }
+            
+            // --- Hysteria2 ---
+            else if (ob.type === 'hysteria2') {
                 const params = new URLSearchParams();
                 if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
                 if (ob.tls?.insecure) params.set('insecure', '1');
+                if (ob.up_mbps) params.set('up', ob.up_mbps);
+                if (ob.down_mbps) params.set('down', ob.down_mbps);
+                
                 const auth = ob.password || ob.auth || '';
                 const link = `hysteria2://${auth}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
                 res.push({ l: link, p: 'hysteria2', n: tag });
             }
-            // VLESS
+            
+            // --- VLESS ---
             else if (ob.type === 'vless') {
                 const params = new URLSearchParams();
                 params.set('encryption', 'none');
-                if (ob.transport?.type) params.set('type', ob.transport.type);
-                if (ob.tls?.enabled) params.set('security', 'tls');
-                if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+                
+                const net = ob.transport?.type || 'tcp';
+                if (net !== 'tcp') params.set('type', net);
+                
+                if (ob.tls?.enabled) {
+                    params.set('security', 'tls');
+                    if (ob.tls.server_name) params.set('sni', ob.tls.server_name);
+                    if (ob.tls.insecure) params.set('allowInsecure', '1');
+                }
+                
                 if (ob.transport?.path) params.set('path', ob.transport.path);
                 if (ob.transport?.headers?.Host) params.set('host', ob.transport.headers.Host);
+                if (ob.transport?.service_name) params.set('serviceName', ob.transport.service_name); // gRPC
                 
                 const uuid = ob.uuid || '';
                 const link = `vless://${uuid}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
                 res.push({ l: link, p: 'vless', n: tag });
             }
-            // Trojan
+            
+            // --- Trojan ---
             else if (ob.type === 'trojan') {
                  const params = new URLSearchParams();
                  if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+                 if (ob.tls?.insecure) params.set('allowInsecure', '1');
+                 
                  const password = ob.password || '';
                  const link = `trojan://${password}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
                  res.push({ l: link, p: 'trojan', n: tag });
