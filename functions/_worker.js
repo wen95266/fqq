@@ -1,10 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v3)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v4)
  * 
  * Update Log:
- * - Added Protocol Inference (Auto-detect Hysteria/2 without 'type' field)
- * - Added Port Splitting (Handle "server": "1.2.3.4:443")
- * - Expanded Sing-box field mappings
+ * - Aggressive Type Inference (VMess/Shadowsocks/Trojan auto-detection)
+ * - Case-insensitive field matching (server/Server/IP/address)
+ * - URL-Safe Base64 decoding support
+ * - Enhanced Xray/V2Ray deep nested parsing
  */
 
 // ==========================================
@@ -182,7 +183,7 @@ async function handleTelegramCommand(message, env, origin) {
 
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ KV 未绑定`);
-        await send("⏳ 正在全力抓取节点 (支持 Xray/Singbox/Clash/Hysteria)...");
+        await send("⏳ 正在全力抓取节点 (支持 VLESS/VMess/Hysteria/Trojan/SS)...");
         const start = Date.now();
         
         try {
@@ -207,7 +208,13 @@ async function handleTelegramCommand(message, env, origin) {
         }
         await send(`📊 <b>系统状态</b>\n节点: ${count}\n更新: ${last}`);
     } else if (text.includes('订阅链接')) {
-        await send(`🔗 <b>订阅链接</b>\n<code>${origin}/all</code>`);
+        const links = [
+            `🌍 <b>Universal (通用)</b>\n<code>${origin}/all</code>`,
+            `🚀 <b>VLESS</b>\n<code>${origin}/vless</code>`,
+            `⚡ <b>Hysteria 2</b>\n<code>${origin}/hysteria2</code>`,
+            `🐱 <b>Clash</b>\n<code>${origin}/clash</code>`
+        ].join('\n\n');
+        await send(links);
     } else {
         await send(`👋 SubLink Bot Ready.`);
     }
@@ -218,14 +225,12 @@ async function handleTelegramCommand(message, env, origin) {
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    // Increase batch size
     const BATCH_SIZE = 10;
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
         const batch = urls.slice(i, i + BATCH_SIZE);
         const promises = batch.map(async (u) => {
             try {
-                // Randomize User-Agent slightly to avoid static blocking
                 const res = await fetch(u, { 
                     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' },
                     cf: { cacheTtl: 60 }
@@ -248,7 +253,7 @@ async function fetchAndParseAll(urls) {
                 } else {
                     // Strategy 2: Base64/Regex
                     let decoded = text;
-                    if (!text.includes(' ') && text.length > 50) {
+                    if (!text.includes(' ') && text.length > 20) {
                         try { decoded = safeAtob(text); } catch(e) {}
                     }
                     const regexNodes = extractNodesRegex(decoded);
@@ -272,30 +277,34 @@ function findNodesRecursively(obj) {
     if (!obj || typeof obj !== 'object') return results;
 
     // --- Case A: Xray/V2Ray structure (protocol + settings.vnext/servers) ---
+    // This handles the "outbounds" item that contains nested servers
     if (obj.protocol && obj.settings) {
+        let foundChildren = false;
         if (obj.settings.vnext && Array.isArray(obj.settings.vnext)) {
-            // VLESS / VMess
             obj.settings.vnext.forEach(v => {
                 const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
                 if (subNode) results.push(subNode);
             });
-            return results; // Stop searching this branch
+            foundChildren = true;
         }
         if (obj.settings.servers && Array.isArray(obj.settings.servers)) {
-            // Shadowsocks / Trojan
             obj.settings.servers.forEach(v => {
                 const subNode = parseXrayChild(obj.protocol, v, obj.streamSettings);
                 if (subNode) results.push(subNode);
             });
-            return results; // Stop searching this branch
+            foundChildren = true;
         }
+        if (foundChildren) return results; // If we found children here, we don't treat this object itself as a node
     }
 
-    // --- Case B: Standard Sing-box / Flat Object / Hysteria Root Config ---
+    // --- Case B: Direct Node Object ---
     const node = parseFlatNode(obj);
     if (node) {
         results.push(node);
-        return results;
+        // Important: A node object usually doesn't contain other nodes, 
+        // but if it's a "selector" or something weird, we might need to continue.
+        // For standard configs, returning here is safe.
+        return results; 
     }
 
     // --- Case C: Recursion ---
@@ -307,59 +316,87 @@ function findNodesRecursively(obj) {
     return results;
 }
 
+// Helper: Case-insensitive property getter
+function getProp(obj, keys) {
+    if (!Array.isArray(keys)) keys = [keys];
+    const objKeys = Object.keys(obj);
+    for (const k of keys) {
+        const found = objKeys.find(ok => ok.toLowerCase() === k.toLowerCase());
+        if (found) return obj[found];
+    }
+    return undefined;
+}
+
 // Parse "Flat" nodes (Sing-box, Clash, Hysteria root objects)
 function parseFlatNode(ob) {
-    // 1. Determine Type (Auto-Inference)
-    let type = (ob.type || ob.protocol || '').toLowerCase();
-    
-    // Auto-detect missing types for raw configs
-    if (!type) {
-        if (ob.auth && (ob.server || ob.server_port)) type = 'hysteria2'; // Hysteria 2 Standard
-        else if (ob.up_mbps && ob.down_mbps) type = 'hysteria'; // Hysteria 1 Standard
-        else if (ob.uuid && (ob.server || ob.address)) type = 'vless'; // VLESS Standard
-    }
-    
-    if (!type) return null;
+    // 1. Determine Address/Port first (Critical)
+    let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
+    let port = getProp(ob, ['server_port', 'port']);
 
-    // 2. Determine Address/Port
-    let server = ob.server || ob.address || ob.ip;
-    let port = ob.server_port || ob.port;
-
-    // Handle "host:port" in server field (Common in Hysteria configs)
+    // Handle "host:port" string in server field
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
-        if (parts.length === 2) {
+        if (parts.length === 2 && !isNaN(parts[1])) {
             server = parts[0];
             port = parseInt(parts[1]);
         }
     }
     
     if (!server || !port) return null;
-    
-    // Ignore invalid types
-    if (['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'ipv4', 'ipv6', 'field'].includes(type)) return null;
 
-    const tag = ob.tag || ob.name || `Node-${Math.floor(Math.random()*10000)}`;
+    // 2. Determine Type
+    let type = getProp(ob, ['type', 'protocol', 'network']);
+    type = (type || '').toLowerCase();
+    
+    // Aggressive Type Inference
+    if (!type) {
+        if (getProp(ob, ['uuid', 'id', 'user_id'])) type = 'vless'; // Likely VLESS or VMess
+        else if (getProp(ob, ['auth_str', 'auth_payload', 'up_mbps'])) type = 'hysteria';
+        else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
+        else if (getProp(ob, ['password']) && !getProp(ob, ['method'])) type = 'trojan'; // Fallback to Trojan or Hysteria2
+    }
+
+    // Disambiguate VLESS/VMess if inferred solely by UUID
+    if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) {
+        type = 'vmess';
+    }
+    
+    if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
+
+    const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
+    const uuid = getProp(ob, ['uuid', 'id', 'user_id']);
+    const password = getProp(ob, ['password', 'auth', 'auth_str']);
+    
+    // TLS / Transport Commons
+    const tlsObj = getProp(ob, ['tls']) || {};
+    const isTls = tlsObj === true || tlsObj.enabled === true || getProp(ob, ['tls']) === true;
+    const sni = getProp(tlsObj, ['server_name', 'sni']) || getProp(ob, ['sni', 'servername', 'host']);
+    const insecure = getProp(tlsObj, ['insecure']) || getProp(ob, ['insecure', 'skip-cert-verify']) ? '1' : '0';
+    
+    const transport = getProp(ob, ['transport']) || {};
+    const network = getProp(transport, ['type']) || getProp(ob, ['network', 'net']) || 'tcp';
+    const host = getProp(transport, ['headers'])?.Host || getProp(ob, ['host', 'ws-headers'])?.Host || sni;
+    const path = getProp(transport, ['path']) || getProp(ob, ['path', 'ws-path']);
 
     try {
         // --- Hysteria 2 ---
-        if (type === 'hysteria2') {
+        if (type.includes('hysteria2') || (type === 'hysteria' && !getProp(ob, ['up_mbps']))) {
             const params = new URLSearchParams();
-            if (ob.tls?.server_name || ob.sni) params.set('sni', ob.tls?.server_name || ob.sni);
-            if (ob.tls?.insecure || ob['skip-cert-verify'] || ob.insecure) params.set('insecure', '1');
-            const auth = ob.password || ob.auth || '';
-            return { l: `hysteria2://${auth}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
+            if (sni) params.set('sni', sni);
+            if (insecure === '1') params.set('insecure', '1');
+            return { l: `hysteria2://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
         }
 
         // --- Hysteria 1 ---
-        if (type === 'hysteria') {
+        if (type.includes('hysteria')) {
             const params = new URLSearchParams();
-            params.set('peer', ob.tls?.server_name || ob.sni || server);
-            if (ob.tls?.insecure || ob['skip-cert-verify'] || ob.insecure) params.set('insecure', '1');
-            if (ob.up_mbps || ob.up) params.set('up', ob.up_mbps || ob.up);
-            if (ob.down_mbps || ob.down) params.set('down', ob.down_mbps || ob.down);
-            if (ob.auth_str || ob.auth) params.set('auth', ob.auth_str || ob.auth);
-            if (ob.alpn) params.set('alpn', ob.alpn);
+            params.set('peer', sni || server);
+            if (insecure === '1') params.set('insecure', '1');
+            const up = getProp(ob, ['up', 'up_mbps']);
+            const down = getProp(ob, ['down', 'down_mbps']);
+            if (up) params.set('up', up);
+            if (down) params.set('down', down);
+            if (password) params.set('auth', password);
             
             return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
         }
@@ -369,56 +406,47 @@ function parseFlatNode(ob) {
             const params = new URLSearchParams();
             params.set('encryption', 'none');
             
-            // Singbox uses `transport`, Clash uses `network`
-            const net = ob.transport?.type || ob.network || 'tcp';
-            if (net === 'http') { params.set('type', 'http'); }
-            else if (net !== 'tcp') { params.set('type', net); }
-
-            // Path/Host
-            const path = ob.transport?.path || ob['ws-path'] || ob['ws-opts']?.path;
-            const host = ob.transport?.headers?.Host || ob['ws-headers']?.Host || ob['ws-opts']?.headers?.Host;
-            if (path) params.set('path', path);
+            if (network !== 'tcp') params.set('type', network === 'http' ? 'tcp' : network);
+            if (network === 'http') params.set('headerType', 'http');
+            
+            if (isTls) params.set('security', 'tls');
+            if (sni) params.set('sni', sni);
+            if (insecure === '1') params.set('allowInsecure', '1');
+            
             if (host) params.set('host', host);
-            if (ob.serviceName || ob['grpc-opts']?.['grpc-service-name']) params.set('serviceName', ob.serviceName || ob['grpc-opts']?.['grpc-service-name']);
+            if (path) params.set('path', path);
+            
+            const serviceName = getProp(transport, ['service_name']) || getProp(ob, ['serviceName', 'grpc-service-name']);
+            if (serviceName) params.set('serviceName', serviceName);
+            
+            const fp = getProp(ob, ['fingerprint', 'fp']);
+            if (fp) params.set('fp', fp);
 
-            // TLS
-            if (ob.tls?.enabled || ob.tls === true) {
-                params.set('security', 'tls');
-                const sni = ob.tls?.server_name || ob.servername || ob.sni;
-                if (sni) params.set('sni', sni);
-                if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('allowInsecure', '1');
-                if (ob.flow) params.set('flow', ob.flow);
-            }
             // Reality
-            if (ob.tls?.reality?.enabled || ob.reality) {
-                 params.set('security', 'reality');
-                 const r = ob.tls?.reality || {};
-                 if(r.public_key) params.set('pbk', r.public_key);
-                 if(r.short_id) params.set('sid', r.short_id);
-                 if(ob.fingerprint) params.set('fp', ob.fingerprint);
+            const reality = getProp(tlsObj, ['reality']) || getProp(ob, ['reality']);
+            if (reality && (reality.enabled || reality.public_key)) {
+                params.set('security', 'reality');
+                if (reality.public_key) params.set('pbk', reality.public_key);
+                if (reality.short_id) params.set('sid', reality.short_id);
             }
 
-            return { l: `vless://${ob.uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
+            return { l: `vless://${uuid}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'vless', n: tag };
         }
 
         // --- VMess ---
         if (type === 'vmess') {
-            const net = ob.transport?.type || ob.network || "tcp";
-            const tlsObj = ob.tls || {};
-            const isTls = tlsObj.enabled || ob.tls === true;
-            
             const vmess = {
-                v: "2", ps: tag, add: server, port: port, id: ob.uuid, aid: ob.alter_id || 0,
-                scy: ob.security || ob.cipher || "auto",
-                net: net,
+                v: "2", ps: tag, add: server, port: port, id: uuid, 
+                aid: getProp(ob, ['alterId', 'alter_id']) || 0,
+                scy: getProp(ob, ['cipher', 'security']) || "auto",
+                net: network,
                 type: "none",
-                host: tlsObj.server_name || ob.servername || ob.sni || ob.transport?.headers?.Host || ob['ws-headers']?.Host || "",
-                path: ob.transport?.path || ob['ws-path'] || ob['ws-opts']?.path || "",
+                host: host || "",
+                path: path || "",
                 tls: isTls ? "tls" : ""
             };
-            if (net === 'grpc') {
-                vmess.path = ob.transport?.service_name || ob['grpc-opts']?.['grpc-service-name'] || ""; 
-                vmess.net = "grpc";
+            if (network === 'grpc') {
+                vmess.path = getProp(transport, ['service_name']) || ""; 
             }
             
             return { l: `vmess://${safeBtoa(JSON.stringify(vmess))}`, p: 'vmess', n: tag };
@@ -426,10 +454,9 @@ function parseFlatNode(ob) {
 
         // --- Shadowsocks ---
         if (type === 'shadowsocks' || type === 'ss') {
-            const method = ob.method || ob.cipher;
-            const pwd = ob.password;
-            if (method && pwd) {
-                const auth = `${method}:${pwd}`;
+            const method = getProp(ob, ['method', 'cipher']);
+            if (method && password) {
+                const auth = `${method}:${password}`;
                 return { l: `ss://${safeBtoa(auth)}@${server}:${port}#${encodeURIComponent(tag)}`, p: 'ss', n: tag };
             }
         }
@@ -437,9 +464,9 @@ function parseFlatNode(ob) {
         // --- Trojan ---
         if (type === 'trojan') {
             const params = new URLSearchParams();
-            const sni = ob.tls?.server_name || ob.sni || ob.servername;
             if (sni) params.set('sni', sni);
-            return { l: `trojan://${ob.password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
+            if (insecure === '1') params.set('allowInsecure', '1');
+            return { l: `trojan://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
         }
 
     } catch(e) {}
@@ -449,18 +476,17 @@ function parseFlatNode(ob) {
 
 // Handle Xray's split structure
 function parseXrayChild(protocol, vChild, streamSettings) {
-    // Merge streamSettings into a flat object for parseFlatNode
     if (!vChild.address || !vChild.port) return null;
     
+    // Combine into a single object for parseFlatNode
     const node = {
-        type: protocol,
+        protocol: protocol,
         server: vChild.address,
-        server_port: vChild.port,
+        port: vChild.port,
         tag: `Xray-${protocol}-${Math.floor(Math.random()*1000)}`,
-        ...streamSettings // Spread global stream settings (network, security, etc)
+        ...streamSettings
     };
 
-    // User handling
     if (vChild.users && vChild.users[0]) {
         const u = vChild.users[0];
         node.uuid = u.id;
@@ -470,18 +496,20 @@ function parseXrayChild(protocol, vChild, streamSettings) {
         node.method = u.method;
     }
     
-    // Map Xray streamSettings fields to Sing-box/Flat fields
+    // Handle Xray-specific streamSettings nesting
     if (streamSettings) {
         node.network = streamSettings.network;
         if (streamSettings.security === 'tls') {
              node.tls = { enabled: true, server_name: streamSettings.tlsSettings?.serverName };
+             // Merge allowInsecure if present
+             if (streamSettings.tlsSettings?.allowInsecure) node.insecure = true;
         }
         if (streamSettings.wsSettings) {
-             node['ws-path'] = streamSettings.wsSettings.path;
-             node['ws-headers'] = streamSettings.wsSettings.headers;
+             node['path'] = streamSettings.wsSettings.path;
+             node['host'] = streamSettings.wsSettings.headers?.Host;
         }
         if (streamSettings.grpcSettings) {
-             node['grpc-opts'] = { 'grpc-service-name': streamSettings.grpcSettings.serviceName };
+             node['serviceName'] = streamSettings.grpcSettings.serviceName;
         }
     }
     
@@ -513,7 +541,16 @@ function safeBtoa(str) {
 }
 
 function safeAtob(str) {
+    // 1. Strip whitespace
+    str = str.replace(/\s/g, '');
+    // 2. URL Safe fix
+    str = str.replace(/-/g, '+').replace(/_/g, '/');
+    // 3. Padding fix
+    while (str.length % 4) str += '=';
+    
     try {
         return decodeURIComponent(atob(str).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
-    } catch (e) { return atob(str); }
+    } catch (e) { 
+        try { return atob(str); } catch(e2) { return str; }
+    }
 }
