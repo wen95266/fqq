@@ -1,11 +1,10 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v2)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v3)
  * 
- * 功能:
- * 1. 自动抓取节点并存储到 KV
- * 2. 提供订阅接口 (Base64编码)
- * 3. Telegram Bot 管理
- * 4. 支持 Sing-box, Xray, V2Ray, Clash 等多种 JSON 结构
+ * Update Log:
+ * - Added Protocol Inference (Auto-detect Hysteria/2 without 'type' field)
+ * - Added Port Splitting (Handle "server": "1.2.3.4:443")
+ * - Expanded Sing-box field mappings
  */
 
 // ==========================================
@@ -183,7 +182,7 @@ async function handleTelegramCommand(message, env, origin) {
 
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ KV 未绑定`);
-        await send("⏳ 正在全力抓取节点 (支持 Xray/Singbox/Clash)...");
+        await send("⏳ 正在全力抓取节点 (支持 Xray/Singbox/Clash/Hysteria)...");
         const start = Date.now();
         
         try {
@@ -292,7 +291,7 @@ function findNodesRecursively(obj) {
         }
     }
 
-    // --- Case B: Standard Sing-box / Flat Object ---
+    // --- Case B: Standard Sing-box / Flat Object / Hysteria Root Config ---
     const node = parseFlatNode(obj);
     if (node) {
         results.push(node);
@@ -310,13 +309,30 @@ function findNodesRecursively(obj) {
 
 // Parse "Flat" nodes (Sing-box, Clash, Hysteria root objects)
 function parseFlatNode(ob) {
-    // 1. Determine Type
-    const type = (ob.type || ob.protocol || '').toLowerCase();
+    // 1. Determine Type (Auto-Inference)
+    let type = (ob.type || ob.protocol || '').toLowerCase();
+    
+    // Auto-detect missing types for raw configs
+    if (!type) {
+        if (ob.auth && (ob.server || ob.server_port)) type = 'hysteria2'; // Hysteria 2 Standard
+        else if (ob.up_mbps && ob.down_mbps) type = 'hysteria'; // Hysteria 1 Standard
+        else if (ob.uuid && (ob.server || ob.address)) type = 'vless'; // VLESS Standard
+    }
+    
     if (!type) return null;
 
     // 2. Determine Address/Port
-    const server = ob.server || ob.address || ob.ip;
-    const port = ob.server_port || ob.port;
+    let server = ob.server || ob.address || ob.ip;
+    let port = ob.server_port || ob.port;
+
+    // Handle "host:port" in server field (Common in Hysteria configs)
+    if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
+        const parts = server.split(':');
+        if (parts.length === 2) {
+            server = parts[0];
+            port = parseInt(parts[1]);
+        }
+    }
     
     if (!server || !port) return null;
     
@@ -330,7 +346,7 @@ function parseFlatNode(ob) {
         if (type === 'hysteria2') {
             const params = new URLSearchParams();
             if (ob.tls?.server_name || ob.sni) params.set('sni', ob.tls?.server_name || ob.sni);
-            if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('insecure', '1');
+            if (ob.tls?.insecure || ob['skip-cert-verify'] || ob.insecure) params.set('insecure', '1');
             const auth = ob.password || ob.auth || '';
             return { l: `hysteria2://${auth}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
         }
@@ -339,10 +355,11 @@ function parseFlatNode(ob) {
         if (type === 'hysteria') {
             const params = new URLSearchParams();
             params.set('peer', ob.tls?.server_name || ob.sni || server);
-            if (ob.tls?.insecure || ob['skip-cert-verify']) params.set('insecure', '1');
+            if (ob.tls?.insecure || ob['skip-cert-verify'] || ob.insecure) params.set('insecure', '1');
             if (ob.up_mbps || ob.up) params.set('up', ob.up_mbps || ob.up);
             if (ob.down_mbps || ob.down) params.set('down', ob.down_mbps || ob.down);
             if (ob.auth_str || ob.auth) params.set('auth', ob.auth_str || ob.auth);
+            if (ob.alpn) params.set('alpn', ob.alpn);
             
             return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
         }
