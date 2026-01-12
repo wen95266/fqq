@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import QRCode from 'react-qr-code';
-import { Zap, Server, Activity, ShieldCheck, QrCode, Globe, Clock, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
+import { Zap, Server, Activity, ShieldCheck, QrCode, Globe, Clock, CheckCircle2, AlertCircle, Copy, Check, Link as LinkIcon, AlertTriangle } from 'lucide-react';
 
 const App: React.FC = () => {
   const [deployDomain, setDeployDomain] = useState('');
   const [serverStatus, setServerStatus] = useState<{count: number, last_update: string, bot_ready: boolean, kv_ready?: boolean} | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   useEffect(() => {
@@ -18,17 +19,28 @@ const App: React.FC = () => {
 
   const fetchStatus = async () => {
       setIsLoading(true);
+      setFetchError(false);
       try {
           // 获取后端状态
           const res = await fetch('/api/status');
           if (res.ok) {
-              const data = await res.json();
-              setServerStatus(data);
+              const text = await res.text();
+              try {
+                  const data = JSON.parse(text);
+                  setServerStatus(data);
+              } catch (e) {
+                  // 如果返回的不是 JSON（可能是本地 Vite 返回的 index.html）
+                  setServerStatus(null);
+                  setFetchError(true);
+              }
           } else {
               setServerStatus(null);
+              setFetchError(true);
           }
       } catch (e) {
           console.error("Failed to fetch status");
+          setServerStatus(null);
+          setFetchError(true);
       } finally {
           setIsLoading(false);
       }
@@ -49,7 +61,15 @@ const App: React.FC = () => {
       });
   };
 
+  const handleBindWebhook = () => {
+      window.open('/webhook', '_blank');
+  };
+
   const qrValue = deployDomain ? getSubLink('all') : '';
+
+  // 状态辅助判断
+  const isSystemOnline = serverStatus && !fetchError;
+  const isBotReady = serverStatus?.bot_ready;
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 font-sans pb-20 selection:bg-blue-500/30">
@@ -63,15 +83,34 @@ const App: React.FC = () => {
             </div>
             <h1 className="font-bold text-lg text-white tracking-tight">SubLink Aggregator</h1>
           </div>
-          <div className="flex items-center gap-2 text-xs font-mono text-gray-500 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
-             <div className={`w-2 h-2 rounded-full ${serverStatus?.bot_ready ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-             {serverStatus?.bot_ready ? 'SYSTEM ONLINE' : 'SYSTEM OFFLINE'}
+          <div className={`flex items-center gap-2 text-xs font-mono px-3 py-1.5 rounded-full border transition-colors ${
+              isSystemOnline 
+                ? 'text-green-400 bg-green-500/10 border-green-500/20' 
+                : 'text-red-400 bg-red-500/10 border-red-500/20'
+          }`}>
+             <div className={`w-2 h-2 rounded-full ${isSystemOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+             {isLoading ? 'CONNECTING...' : (isSystemOnline ? 'SYSTEM ONLINE' : 'DISCONNECTED')}
           </div>
         </div>
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-8">
         
+        {/* 错误提示：本地开发环境或后端未部署 */}
+        {fetchError && (
+            <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 flex items-start gap-3">
+                <AlertTriangle className="text-orange-400 shrink-0 mt-0.5" size={20} />
+                <div className="text-sm">
+                    <h3 className="font-bold text-orange-200 mb-1">后端连接失败</h3>
+                    <p className="text-orange-300/80 leading-relaxed">
+                        无法连接到 Functions 后端。如果您正在本地运行 <code>npm run dev</code>，这是正常现象，因为 Vite 不支持 Cloudflare Functions。
+                        <br/>
+                        请使用 <code>npx wrangler pages dev dist</code> 进行本地测试，或部署到 Cloudflare Pages 查看效果。
+                    </p>
+                </div>
+            </div>
+        )}
+
         {/* 状态卡片区 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* 节点计数卡片 */}
@@ -100,17 +139,29 @@ const App: React.FC = () => {
                  <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
                     <ShieldCheck size={80} />
                 </div>
-                <div className="flex items-center gap-2 mb-2">
-                    <Globe size={16} className="text-green-400"/>
-                    <h3 className="text-gray-400 text-xs font-bold uppercase tracking-widest">控制中心</h3>
+                <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                        <Globe size={16} className="text-green-400"/>
+                        <h3 className="text-gray-400 text-xs font-bold uppercase tracking-widest">控制中心</h3>
+                    </div>
+                    {/* 绑定 Webhook 按钮 */}
+                    {isBotReady && (
+                        <button 
+                            onClick={handleBindWebhook}
+                            className="text-[10px] bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/30 px-2 py-1 rounded flex items-center gap-1 transition-colors"
+                            title="点击此按钮激活 Bot (绑定 Webhook)"
+                        >
+                            <LinkIcon size={10} /> 绑定 Webhook
+                        </button>
+                    )}
                 </div>
                 <div className="mt-4 space-y-3">
                     <div className="flex items-center gap-3">
-                         <div className={`p-1.5 rounded-full ${serverStatus?.bot_ready ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                             {serverStatus?.bot_ready ? <CheckCircle2 size={18}/> : <AlertCircle size={18}/>}
+                         <div className={`p-1.5 rounded-full ${isBotReady ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+                             {isBotReady ? <CheckCircle2 size={18}/> : <AlertCircle size={18}/>}
                          </div>
-                         <span className="text-sm font-medium text-gray-300">
-                             {serverStatus?.bot_ready ? 'Bot 已连接' : 'Token 未配置'}
+                         <span className={`text-sm font-medium ${isBotReady ? 'text-gray-300' : 'text-red-300'}`}>
+                             {fetchError ? '连接失败' : (isBotReady ? 'Bot Token 已配置' : 'Token 未配置')}
                          </span>
                     </div>
                     {/* KV 状态检查 */}
@@ -125,9 +176,11 @@ const App: React.FC = () => {
                         </div>
                     )}
                     <p className="text-xs text-gray-500 leading-relaxed pl-9">
-                        {serverStatus?.bot_ready 
-                            ? '已启用 Bot 键盘菜单，请在 Telegram 中点击 "🔄 立即更新" 来刷新节点缓存。' 
-                            : '请在 Cloudflare Pages 后台添加环境变量 TG_TOKEN 和 ADMIN_ID。'}
+                        {isBotReady 
+                            ? '首次使用请点击右上角 "绑定 Webhook" 激活。之后在 Telegram 发送 /start 即可。' 
+                            : fetchError 
+                                ? '请确保 Functions 已正确部署且运行中。'
+                                : '请在 Cloudflare Pages 后台设置环境变量: TG_TOKEN'}
                     </p>
                 </div>
             </div>
@@ -143,7 +196,7 @@ const App: React.FC = () => {
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
                 {/* 二维码展示 */}
                 <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl shadow-lg shadow-black/20">
-                    {qrValue ? (
+                    {qrValue && !fetchError ? (
                         <QRCode 
                             value={qrValue} 
                             size={180}
@@ -152,8 +205,9 @@ const App: React.FC = () => {
                             viewBox={`0 0 256 256`}
                         />
                     ) : (
-                         <div className="w-[180px] h-[180px] bg-gray-100 rounded-lg animate-pulse flex items-center justify-center text-gray-300 text-xs">
-                             Loading URL...
+                         <div className="w-[180px] h-[180px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-gray-400 text-xs gap-2">
+                             <AlertCircle size={24} className="opacity-50"/>
+                             <span>{fetchError ? 'Service Unavailable' : 'Loading...'}</span>
                          </div>
                     )}
                     <p className="mt-4 text-xs font-bold text-gray-400 uppercase tracking-widest">通用订阅 (Universal)</p>
@@ -175,7 +229,7 @@ const App: React.FC = () => {
                             <div className="flex justify-between items-center text-xs text-gray-500 mb-1 px-1">
                                 <span>{item.label}</span>
                             </div>
-                            <div className={`flex items-center gap-3 p-3 rounded-lg border bg-gray-950 transition-all ${serverStatus ? 'border-gray-800 hover:border-gray-600' : 'border-red-900/30 opacity-50'}`}>
+                            <div className={`flex items-center gap-3 p-3 rounded-lg border bg-gray-950 transition-all ${isSystemOnline ? 'border-gray-800 hover:border-gray-600' : 'border-red-900/30 opacity-50'}`}>
                                 <div className={`px-2 py-1 rounded text-xs font-mono font-bold border ${item.color}`}>
                                     /{item.path}
                                 </div>
