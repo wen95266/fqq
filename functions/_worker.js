@@ -7,6 +7,7 @@
  * - Fix: Base64 detection logic to handle multiline Base64 correctly
  * - Fix: Aggressive field trimming to prevent "hysteria2 " type errors
  * - Fix: Fetch timeout (8s) to prevent hanging
+ * - Fix: Added support for 'hy2' protocol and better Hysteria regex
  */
 
 // ==========================================
@@ -445,6 +446,9 @@ function parseFlatNode(ob) {
     let type = getProp(ob, ['type', 'protocol', 'network']);
     type = (type || '').toLowerCase().trim();
     
+    // Normalize hy2
+    if (type === 'hy2') type = 'hysteria2';
+
     // Auto-Inference
     if (!type) {
         if (getProp(ob, ['uuid', 'id'])) type = 'vless'; 
@@ -629,7 +633,7 @@ function parseXrayChild(protocol, vChild, streamSettings) {
 
 function extractNodesRegex(text) {
     const nodes = [];
-    const regex = /(vmess|vless|trojan|ss|hysteria2|hysteria):\/\/[^\s"',;<>]+/g;
+    const regex = /(vmess|vless|trojan|ss|hysteria2|hysteria|hy2|tuic):\/\/[^\s"',;<>]+/g;
     const matches = text.match(regex);
     if (!matches) return [];
 
@@ -638,6 +642,10 @@ function extractNodesRegex(text) {
             let clean = link.split(/[\s"';<>,]/)[0];
             let type = clean.split(':')[0];
             let name = 'RegexNode';
+            
+            // Normalize types
+            if (type === 'hy2') type = 'hysteria2';
+            
             if (clean.includes('#')) name = decodeURIComponent(clean.split('#')[1]);
             nodes.push({ l: clean, p: type, n: name });
         } catch(e){}
