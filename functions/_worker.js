@@ -1,11 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v8)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v9)
  * 
  * Update Log:
- * - CRITICAL FIX: Handle JSON trailing commas (Sing-box config fix)
- * - CRITICAL FIX: Base64 -> JSON recursive strategy (Hidden node fix)
- * - Fix: Hysteria 2 obfs param construction
- * - Bot: Enhanced protocol statistics display
+ * - Fix: Use 'new Function' to parse relaxed JSON (handles comments/unquoted keys natively)
+ * - Fix: Support Sing-box Hysteria2 'users' array structure
+ * - Fix: URI Encode passwords and tags
+ * - Fix: Improved deduplication key (Link + Protocol)
  */
 
 // ==========================================
@@ -195,20 +195,19 @@ async function handleTelegramCommand(message, env, origin) {
     if (text.includes('立即更新')) {
         if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。`);
         
-        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan / JSON+Base64)...");
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取 (Deep Scan Mode)...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
             
-            // 详细统计
             const stats = {};
             nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
             const statsStr = Object.entries(stats)
                 .map(([k, v]) => `• <b>${k.toUpperCase()}</b>: ${v}`)
                 .join('\n');
 
-            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 有效节点数为 0。\n请检查订阅源是否有效 (HTTP 200) 且格式正确。`);
+            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 有效节点数为 0。\n请检查订阅源是否有效。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
             const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -216,7 +215,7 @@ async function handleTelegramCommand(message, env, origin) {
             
             await send(`✅ <b>更新成功</b>\n\n📊 <b>节点总数:</b> ${nodes.length}\n${statsStr}\n\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s\n🕒 时间: ${time}`);
         } catch (e) {
-            await send(`❌ <b>更新失败:</b> ${e.message}\nStack: ${e.stack}`);
+            await send(`❌ <b>更新失败:</b> ${e.message}`);
         }
 
     } else if (text.includes('系统状态')) {
@@ -243,25 +242,20 @@ async function handleTelegramCommand(message, env, origin) {
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
         const msg = [
             `🔗 <b>订阅链接 (Subscription)</b>`,
-            ``,
-            `🌍 <b>Universal:</b> <code>${origin}/all</code>`,
-            `🚀 <b>VLESS:</b> <code>${origin}/vless</code>`,
-            `⚡ <b>Hysteria2:</b> <code>${origin}/hysteria2</code>`,
-            `🐱 <b>Clash:</b> <code>${origin}/clash</code>`,
-            ``,
-            `<b>提示:</b> 使用 Universal 链接可包含所有协议。`
+            `<code>${origin}/all</code>`,
+            `<code>${origin}/hysteria2</code>`
         ].join('\n');
         try { await sendPhoto(qrApi, msg); } catch(e) { await send(msg); }
 
     } else if (text.includes('检测配置')) {
-        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v8 (Trailing Comma Fix)`);
+        await send(`⚙️ <b>配置检测</b>\nKV: ${env.KV?'✅':'❌'}\nToken: ${env.TG_TOKEN?'✅':'❌'}\nEngine: v9 (Eval+UsersFix)`);
     } else {
         await send(`👋 <b>SubLink Bot Ready</b>`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic (v8)
+// 4. Ultimate Parser Logic (v9)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -277,33 +271,30 @@ async function fetchAndParseAll(urls) {
                 });
                 if (!res.ok) return;
                 let text = await res.text();
-                text = text.trim();
+                // Strip BOM
+                text = text.replace(/^\uFEFF/, '').trim();
 
                 let foundInThisUrl = [];
 
-                // Strategy 1: JSON Parse (Cleaned)
-                const json = tryParseJSON(text);
+                // Strategy 1: Relaxed JSON Parse (handles comments, unquoted keys)
+                const json = tryParseDirtyJSON(text);
                 if (json) {
                     foundInThisUrl = findNodesRecursively(json);
                 }
 
-                // Strategy 2: If JSON failed, try Base64 Decode -> JSON
+                // Strategy 2: Base64 -> Relaxed JSON
                 if (foundInThisUrl.length === 0) {
-                     // Try decoding base64
                      if (!text.includes(' ') && !text.includes('\n')) {
                          try {
                              const decoded = safeAtob(text);
-                             // Recursive: try parsing the decoded text as JSON
-                             const jsonDecoded = tryParseJSON(decoded);
+                             const jsonDecoded = tryParseDirtyJSON(decoded);
                              if (jsonDecoded) {
                                  foundInThisUrl = findNodesRecursively(jsonDecoded);
                              } else {
-                                 // Strategy 3: Regex on Decoded Text
                                  foundInThisUrl = extractNodesRegex(decoded);
                              }
                          } catch(e) {}
                      } else {
-                         // Strategy 4: Regex on Raw Text
                          foundInThisUrl = extractNodesRegex(text);
                      }
                 }
@@ -314,27 +305,28 @@ async function fetchAndParseAll(urls) {
         await Promise.all(promises);
     }
 
-    // Deduplicate
+    // Deduplicate (Use Link + Protocol to ensure Hysteria vs Hysteria2 distinction)
     const unique = new Map();
     nodes.forEach(n => {
-        if(n.l && !unique.has(n.l)) unique.set(n.l, n);
+        if(n.l) {
+            const key = n.l + '|' + n.p;
+            if(!unique.has(key)) unique.set(key, n);
+        }
     });
     return Array.from(unique.values());
 }
 
-// Robust JSON Parser: Strips comments //, /**/ AND Trailing Commas
-function tryParseJSON(str) {
+// Powerful parser using new Function to handle JS objects/comments
+function tryParseDirtyJSON(str) {
     if (!str || typeof str !== 'string') return null;
     try {
+        // Try strict JSON first for speed
         return JSON.parse(str);
     } catch (e) {
         try {
-            // 1. Strip comments
-            let clean = str.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1');
-            // 2. Strip trailing commas (e.g. ` "a": 1, }` -> ` "a": 1 }`)
-            // Matches a comma, followed by optional whitespace, followed by } or ]
-            clean = clean.replace(/,(\s*[}\]])/g, '$1');
-            return JSON.parse(clean);
+            // Fallback to JS evaluation (sandbox-ish)
+            // This handles comments //, unquoted keys { a: 1 }, trailing commas
+            return new Function('return (' + str + ')')();
         } catch (e2) {
             return null;
         }
@@ -369,6 +361,7 @@ function findNodesRecursively(obj) {
         obj.forEach(item => results.push(...findNodesRecursively(item)));
     } else {
         Object.keys(obj).forEach(key => {
+            // Avoid large data fields
             if (key !== 'body' && key !== 'data') results.push(...findNodesRecursively(obj[key]));
         });
     }
@@ -390,9 +383,10 @@ function parseFlatNode(ob) {
     let server = getProp(ob, ['server', 'ip', 'address', 'server_address']);
     let port = getProp(ob, ['server_port', 'port']);
 
-    // Handle host:port
+    // Handle host:port string
     if (server && typeof server === 'string' && server.includes(':') && !server.includes('://')) {
         const parts = server.split(':');
+        // Simple check to avoid breaking IPv6 [::]:port which split returns > 2
         if (parts.length === 2 && !isNaN(parts[1])) {
             server = parts[0];
             port = parseInt(parts[1]);
@@ -412,6 +406,7 @@ function parseFlatNode(ob) {
     }
 
     if (type === 'vless' && (getProp(ob, ['alterId', 'alter_id']) || 0) > 0) type = 'vmess';
+    // Remove "field" etc. but keep Hysteria
     if (!type || ['selector', 'urltest', 'direct', 'block', 'dns', 'reject', 'field', 'http', 'socks'].includes(type)) return null;
 
     const tag = getProp(ob, ['tag', 'name', 'ps', 'remarks']) || `Node-${Math.floor(Math.random()*10000)}`;
@@ -424,19 +419,29 @@ function parseFlatNode(ob) {
     try {
         // --- Hysteria 2 ---
         if (type === 'hysteria2') {
-            const password = getProp(ob, ['password', 'auth', 'auth_str']);
+            let password = getProp(ob, ['password', 'auth', 'auth_str']);
+            // Handle users array (Singbox variation)
+            const users = getProp(ob, ['users']);
+            if (!password && Array.isArray(users) && users.length > 0) {
+                password = users[0].password || users[0].auth;
+            }
+
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('insecure', '1');
             
-            // Singbox obfs mapping
+            // Obfs
             const obfs = getProp(ob, ['obfs']);
             if (obfs && typeof obfs === 'object') {
                  if (obfs.type === 'salamander') params.set('obfs', 'salamander');
                  if (obfs.password) params.set('obfs-password', obfs.password);
             }
 
-            return { l: `hysteria2://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria2', n: tag };
+            return { 
+                l: `hysteria2://${encodeURIComponent(password||'')}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, 
+                p: 'hysteria2', 
+                n: tag 
+            };
         }
 
         // --- Hysteria 1 ---
@@ -456,7 +461,11 @@ function parseFlatNode(ob) {
             const protocol = getProp(ob, ['protocol']);
             if (protocol) params.set('protocol', protocol);
 
-            return { l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'hysteria', n: tag };
+            return { 
+                l: `hysteria://${server}:${port}?${params}#${encodeURIComponent(tag)}`, 
+                p: 'hysteria', 
+                n: tag 
+            };
         }
 
         // --- VLESS ---
@@ -524,7 +533,7 @@ function parseFlatNode(ob) {
             const params = new URLSearchParams();
             if (sni) params.set('sni', sni);
             if (insecure === '1') params.set('allowInsecure', '1');
-            return { l: `trojan://${password}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
+            return { l: `trojan://${encodeURIComponent(password)}@${server}:${port}?${params}#${encodeURIComponent(tag)}`, p: 'trojan', n: tag };
         }
         
         // --- Shadowsocks ---
