@@ -22,7 +22,7 @@ const BOT_KEYBOARD = {
     input_field_placeholder: "请选择操作..."
 };
 
-// 预置订阅源 (支持 Sing-box, Clash, Hysteria2 等格式)
+// 预置订阅源
 const PRESET_URLS = [
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/singbox/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/singbox/1/config.json",
@@ -44,18 +44,6 @@ const PRESET_URLS = [
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/hysteria2/3/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/hysteria2/4/config.json",
   "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/hysteria2/4/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/2/config.yaml",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/clash.meta2/2/config.yaml",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/3/config.yaml",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/clash.meta2/3/config.yaml",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/4/config.yaml",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/clash.meta2/4/config.yaml",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/5/config.yaml",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/clash.meta2/5/config.yaml",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/6/config.yaml",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/clash.meta2/6/config.yaml",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/clash.meta2/1/config.yaml",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/clash.meta2/1/config.yaml",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/1/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/xray/1/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/2/config.json",
@@ -63,19 +51,7 @@ const PRESET_URLS = [
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/3/config.json",
   "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/xray/3/config.json",
   "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/xray/4/config.json",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/xray/4/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/juicity/1/config.json",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/juicity/1/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/juicity/2/config.json",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/juicity/2/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/naiveproxy/1/config.json",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/naiveproxy/1/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/naiveproxy/2/config.json",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/naiveproxy/2/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/mieru/1/config.json",
-  "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/mieru/1/config.json",
-  "https://www.gitlabip.xyz/Alvin9999/PAC/master/backup/img/1/2/ipp/mieru/2/config.json",
-  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/mieru/2/config.json"
+  "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/backup/img/1/2/ipp/xray/4/config.json"
 ];
 
 const SUB_NAME = "SubLink";
@@ -88,7 +64,7 @@ export default {
     const url = new URL(request.url);
     const pathPart = url.pathname.replace(/^\/|\/$/g, '').toLowerCase();
 
-    // 静态资源放行 (图片, js, css, etc.)
+    // 静态资源放行
     const isApi = pathPart.startsWith('api/');
     const isSub = ['all', 'vless', 'vmess', 'trojan', 'hysteria', 'hysteria2', 'clash', 'sub', 'subscribe'].some(t => pathPart.includes(t));
     
@@ -111,9 +87,7 @@ export default {
         const update = await request.json();
         if (update.message && update.message.text) {
              const chatId = String(update.message.from.id);
-             // 简单的鉴权
              if (env.ADMIN_ID && chatId !== String(env.ADMIN_ID)) {
-                 // 可选：静默或回复无权限
                  return new Response('Unauthorized');
              }
              ctx.waitUntil(handleTelegramCommand(update.message, env, url.origin));
@@ -127,7 +101,6 @@ export default {
          let count = 0;
          let updateTime = null;
          try {
-             // 检查 KV 是否绑定
              if (!env.KV) throw new Error("KV_NOT_BOUND");
              const stored = await env.KV.get('NODES');
              if (stored) {
@@ -148,7 +121,6 @@ export default {
     }
 
     // --- 接口: 订阅输出 ---
-    // 1. 确定订阅类型
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
@@ -160,7 +132,6 @@ export default {
     }
     if (!targetType) targetType = 'all';
 
-    // 2. 获取数据
     let nodesData = [];
     try {
         if (env.KV) {
@@ -169,16 +140,15 @@ export default {
         }
     } catch(e) {}
 
-    // 3. 过滤数据
     let filteredNodes = nodesData;
     if (targetType && targetType !== 'all') {
       const types = targetType.split(',').map(t => t.trim());
       filteredNodes = nodesData.filter(node => types.some(t => node.p.includes(t)));
     }
 
-    // 4. 生成 Base64
+    // UTF-8 安全的 Base64 编码
     const links = filteredNodes.map(n => n.l).join('\n');
-    const encoded = btoa(links);
+    const encoded = safeBtoa(links);
 
     return new Response(encoded, {
       headers: {
@@ -199,7 +169,6 @@ async function handleTelegramCommand(message, env, origin) {
     const chatId = message.chat.id;
     const text = message.text.trim();
     
-    // 发送消息助手函数 (带默认键盘)
     const send = async (msg, options = {}) => {
         const payload = {
             chat_id: chatId, 
@@ -208,7 +177,6 @@ async function handleTelegramCommand(message, env, origin) {
             disable_web_page_preview: true,
             reply_markup: options.removeKeyboard ? { remove_keyboard: true } : BOT_KEYBOARD
         };
-        
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -216,7 +184,6 @@ async function handleTelegramCommand(message, env, origin) {
         });
     };
     
-    // 发送图片助手函数
     const sendPhoto = async (photoUrl, caption) => {
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendPhoto`, {
              method: 'POST',
@@ -230,116 +197,80 @@ async function handleTelegramCommand(message, env, origin) {
         });
     }
 
-    // --- 指令路由 ---
-    
     // 1. 帮助 / 启动
     if (text === '/start' || text.includes('帮助')) {
         await send(
             `👋 <b>欢迎使用 SubLink 管理机器人</b>\n\n` +
-            `请使用下方键盘菜单进行操作：\n\n` +
-            `🔄 <b>立即更新</b>: 抓取最新节点并缓存\n` +
-            `📊 <b>系统状态</b>: 查看当前节点数和更新时间\n` +
-            `🔗 <b>订阅链接</b>: 获取订阅地址和二维码\n` +
-            `⚙️ <b>检测配置</b>: 检查 KV 和 环境变量`
+            `🔄 <b>立即更新</b>: 抓取最新节点\n` +
+            `📊 <b>系统状态</b>: 查看节点数量\n` +
+            `🔗 <b>订阅链接</b>: 获取订阅地址\n`
         );
     } 
-    
     // 2. 更新节点
     else if (text === '/update' || text.includes('立即更新')) {
         if (!env.KV) {
-            await send(`❌ <b>错误</b>: 未绑定 KV Namespace。\n请在 Cloudflare Pages 后台设置中绑定名为 <code>KV</code> 的命名空间。`);
+            await send(`❌ <b>错误</b>: 未绑定 KV Namespace。`);
             return;
         }
 
-        await send("⏳ <b>正在抓取...</b>\n正在从 50+ 个订阅源聚合节点，这可能需要 10-20 秒。");
+        await send("⏳ <b>正在抓取...</b>\n正在从订阅源聚合节点，这可能需要 10-20 秒。");
         const startTime = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
             
             if (nodes.length === 0) {
-                 await send(`⚠️ <b>警告</b>: 抓取完成，但没有找到有效节点。可能是源站网络问题。`);
+                 await send(`⚠️ <b>警告</b>: 抓取完成，但没有找到有效节点。`);
                  return;
             }
 
-            // 存入 KV
             await env.KV.put('NODES', JSON.stringify(nodes));
             
-            // 存入 更新时间 (北京时间)
             const now = new Date();
-            // 简单的 UTC+8 计算
             const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
             await env.KV.put('LAST_UPDATE', beijingTime);
             
             const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-            await send(`✅ <b>更新成功!</b>\n\n📊 节点总数: <b>${nodes.length}</b>\n⏱️ 耗时: ${duration}秒\n📅 时间: ${beijingTime}\n\n前端页面已同步更新。`);
+            await send(`✅ <b>更新成功!</b>\n\n📊 节点总数: <b>${nodes.length}</b>\n⏱️ 耗时: ${duration}秒\n📅 时间: ${beijingTime}`);
         } catch (e) {
             await send(`❌ <b>更新失败</b>:\n<pre>${e.message}</pre>`);
         }
     } 
-    
     // 3. 查看状态
     else if (text === '/status' || text.includes('系统状态')) {
         let count = 0;
         let lastUp = "从未更新";
         let kvStatus = "✅ 正常";
-        
         try {
             if (!env.KV) throw new Error("KV 未绑定");
             const stored = await env.KV.get('NODES');
             if (stored) count = JSON.parse(stored).length;
             lastUp = await env.KV.get('LAST_UPDATE') || "未知";
-        } catch(e) {
-            kvStatus = `❌ 异常 (${e.message})`;
-        }
-        
-        await send(
-            `📊 <b>系统状态报告</b>\n\n` +
-            `🔢 <b>节点数量:</b> ${count}\n` +
-            `🕒 <b>最后更新:</b> ${lastUp}\n` +
-            `💾 <b>KV 存储:</b> ${kvStatus}\n` +
-            `🤖 <b>Bot 服务:</b> ✅ 运行中`
-        );
+        } catch(e) { kvStatus = `❌ 异常`; }
+        await send(`📊 <b>系统状态</b>\n\n🔢 节点: ${count}\n🕒 更新: ${lastUp}\n💾 KV: ${kvStatus}`);
     } 
-    
     // 4. 获取订阅
     else if (text === '/sub' || text.includes('订阅链接')) {
         const subUrl = `${origin}`;
-        let msg = `🔗 <b>您的专属订阅链接</b>\n\n`;
-        msg += `🌐 <b>全部节点 (通用):</b>\n<code>${subUrl}/all</code>\n\n`;
-        msg += `🚀 <b>VLESS 专线:</b>\n<code>${subUrl}/vless</code>\n\n`;
-        msg += `⚡ <b>Hysteria2:</b>\n<code>${subUrl}/hysteria2</code>\n\n`;
-        msg += `🐱 <b>Clash Meta:</b>\n<code>${subUrl}/clash</code>`;
-        
+        let msg = `🔗 <b>订阅链接</b>\n\n`;
+        msg += `🌐 <b>通用订阅:</b> <code>${subUrl}/all</code>\n`;
+        msg += `⚡ <b>Hysteria2:</b> <code>${subUrl}/hysteria2</code>\n`;
+        msg += `🚀 <b>VLESS:</b> <code>${subUrl}/vless</code>`;
         await send(msg);
-        
-        // 生成二维码图片
         const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(subUrl + '/all')}`;
-        await sendPhoto(qrApi, '📱 扫码直接导入 (包含所有节点)');
+        await sendPhoto(qrApi, '📱 扫码直接导入');
     }
-    
-    // 5. 检测配置
     else if (text.includes('检测配置')) {
-         let report = `⚙️ <b>配置检测</b>\n\n`;
-         report += `1️⃣ <b>KV Binding:</b> ${env.KV ? '✅ 已绑定' : '❌ 未绑定 (变量名应为 KV)'}\n`;
-         report += `2️⃣ <b>TG_TOKEN:</b> ${env.TG_TOKEN ? '✅ 已设置' : '❌ 未设置'}\n`;
-         report += `3️⃣ <b>ADMIN_ID:</b> ${env.ADMIN_ID ? `✅ 已设置 (${env.ADMIN_ID})` : '⚠️ 未设置 (任何人均可操作Bot)'}\n`;
+         let report = `⚙️ <b>配置检测</b>\n\n1️⃣ KV: ${env.KV ? '✅' : '❌'}\n2️⃣ TG_TOKEN: ${env.TG_TOKEN ? '✅' : '❌'}`;
          await send(report);
-    }
-    
-    // 6. 未知指令
-    else {
-        // 如果是群组消息，通常忽略未知指令以免刷屏；如果是私聊，可以提示
-        // await send("❓ 未知指令，请使用键盘菜单操作。");
     }
 }
 
 // ==========================================
-// 4. 节点抓取核心逻辑
+// 4. 节点抓取核心逻辑 (增强版)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
-    // 适度并发，避免 Cloudflare 资源限制
     const BATCH_SIZE = 5; 
     
     for (let i = 0; i < urls.length; i += BATCH_SIZE) {
@@ -351,50 +282,53 @@ async function fetchAndParseAll(urls) {
                     cf: { cacheTtl: 60 }
                 });
                 if (!res.ok) return;
-                const text = await res.text();
-                
-                // 正则提取所有常见协议链接
-                // 支持: vmess://, vless://, trojan://, ss://, hysteria2://, tuic://
-                // 排除: 包含空格的, 非链接格式的
+                let text = await res.text();
+                text = text.trim();
+
+                // 1. 尝试解析 Sing-box JSON (因为 PRESET_URLS 包含大量 config.json)
+                if (text.startsWith('{') || text.startsWith('[')) {
+                    try {
+                        const json = JSON.parse(text);
+                        const outbounds = Array.isArray(json) ? json : (json.outbounds || []);
+                        const extracted = parseSingboxOutbounds(outbounds);
+                        if (extracted.length > 0) {
+                            nodes.push(...extracted);
+                            return; // 成功解析 JSON 后跳过后续步骤
+                        }
+                    } catch(e) {}
+                }
+
+                // 2. 尝试 Base64 解码 (处理编码的订阅)
+                let decodedText = text;
+                try {
+                    // 如果不包含空格且很长，可能是 Base64
+                    if (!text.includes(' ') && text.length > 20) {
+                        decodedText = safeAtob(text);
+                    }
+                } catch(e) {}
+
+                // 3. 正则提取链接
                 const regex = /(vmess|vless|trojan|ss|hysteria2|tuic):\/\/[^\s"',;<>]+/g;
-                const matches = text.match(regex);
+                const matches = decodedText.match(regex);
                 
                 if (matches) {
                     matches.forEach(link => {
-                         // 简单的清洗
                          let cleanLink = link.split('"')[0].split("'")[0].split("<")[0];
-                         
-                         // 尝试提取节点名称 (Hash部分)
-                         let n = 'Node';
                          let p = cleanLink.split('://')[0];
+                         let n = 'Node';
                          try { 
                              const hashPart = cleanLink.split('#')[1];
                              if(hashPart) n = decodeURIComponent(hashPart); 
                          } catch(e){}
-                         
                          nodes.push({ l: cleanLink, p: p, n: n });
                     });
-                } else if (text.length > 50 && !text.includes(' ') && !text.includes('<')) {
-                     // 尝试 Base64 解码 (兜底)
-                     try {
-                         const decoded = atob(text.trim());
-                         const subMatches = decoded.match(regex);
-                         if(subMatches) {
-                             subMatches.forEach(link => {
-                                 let p = link.split('://')[0];
-                                 nodes.push({ l: link, p: p, n: 'Base64_Node' });
-                             });
-                         }
-                     } catch(e) {}
                 }
-            } catch(e) {
-                // 单个源失败不影响整体
-            }
+            } catch(e) {}
         });
         await Promise.all(promises);
     }
     
-    // 去重 (根据链接内容)
+    // 去重
     const unique = [];
     const seen = new Set();
     for (const n of nodes) {
@@ -404,4 +338,68 @@ async function fetchAndParseAll(urls) {
         }
     }
     return unique;
+}
+
+// 辅助: 解析 Sing-box 格式节点为通用链接
+function parseSingboxOutbounds(outbounds) {
+    const res = [];
+    if (!Array.isArray(outbounds)) return res;
+    
+    outbounds.forEach(ob => {
+        if (!ob.server || !ob.server_port) return;
+        const tag = ob.tag || 'Node';
+        
+        try {
+            // Hysteria2
+            if (ob.type === 'hysteria2') {
+                const params = new URLSearchParams();
+                if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+                if (ob.tls?.insecure) params.set('insecure', '1');
+                const auth = ob.password || ob.auth || '';
+                const link = `hysteria2://${auth}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
+                res.push({ l: link, p: 'hysteria2', n: tag });
+            }
+            // VLESS
+            else if (ob.type === 'vless') {
+                const params = new URLSearchParams();
+                params.set('encryption', 'none');
+                if (ob.transport?.type) params.set('type', ob.transport.type);
+                if (ob.tls?.enabled) params.set('security', 'tls');
+                if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+                if (ob.transport?.path) params.set('path', ob.transport.path);
+                if (ob.transport?.headers?.Host) params.set('host', ob.transport.headers.Host);
+                
+                const uuid = ob.uuid || '';
+                const link = `vless://${uuid}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
+                res.push({ l: link, p: 'vless', n: tag });
+            }
+            // Trojan
+            else if (ob.type === 'trojan') {
+                 const params = new URLSearchParams();
+                 if (ob.tls?.server_name) params.set('sni', ob.tls.server_name);
+                 const password = ob.password || '';
+                 const link = `trojan://${password}@${ob.server}:${ob.server_port}?${params.toString()}#${encodeURIComponent(tag)}`;
+                 res.push({ l: link, p: 'trojan', n: tag });
+            }
+        } catch(e) {}
+    });
+    return res;
+}
+
+// 辅助: UTF-8 Safe Base64 Helpers
+function safeBtoa(str) {
+    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
+        function toSolidBytes(match, p1) {
+            return String.fromCharCode('0x' + p1);
+    }));
+}
+
+function safeAtob(str) {
+    try {
+        return decodeURIComponent(atob(str).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+    } catch(e) {
+        return atob(str); // Fallback to standard atob
+    }
 }
