@@ -1,11 +1,11 @@
 /**
- * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v4)
+ * Cloudflare Pages Functions - Backend Worker (Ultimate Edition v5)
  * 
  * Update Log:
- * - Aggressive Type Inference (VMess/Shadowsocks/Trojan auto-detection)
- * - Case-insensitive field matching (server/Server/IP/address)
- * - URL-Safe Base64 decoding support
- * - Enhanced Xray/V2Ray deep nested parsing
+ * - Bot: Added QR Code image response (sendPhoto)
+ * - Bot: Added detailed protocol statistics in Status/Update
+ * - Bot: Added "Check Config" command
+ * - Core: Refined parser for better compatibility
  */
 
 // ==========================================
@@ -66,7 +66,7 @@ export default {
 
     // 静态资源放行
     const isApi = pathPart.startsWith('api/');
-    const isSub = ['all', 'vless', 'vmess', 'trojan', 'hysteria', 'hysteria2', 'clash', 'sub', 'subscribe'].some(t => pathPart.includes(t));
+    const isSub = ['all', 'vless', 'vmess', 'trojan', 'hysteria', 'hysteria2', 'clash', 'sub', 'subscribe', 'singbox'].some(t => pathPart.includes(t));
     
     if (!isApi && !isSub && pathPart !== 'webhook') {
         return env.ASSETS.fetch(request);
@@ -87,8 +87,10 @@ export default {
         const update = await request.json();
         if (update.message && update.message.text) {
              const chatId = String(update.message.from.id);
+             // 鉴权：如果有 ADMIN_ID，则只响应 ADMIN_ID
              if (env.ADMIN_ID && chatId !== String(env.ADMIN_ID)) {
-                 // 简单鉴权
+                 // Unauthorized
+                 return new Response('OK');
              }
              ctx.waitUntil(handleTelegramCommand(update.message, env, url.origin));
         }
@@ -120,8 +122,8 @@ export default {
     const queryType = url.searchParams.get('type');
     let targetType = queryType ? queryType.toLowerCase() : '';
     
-    // Auto-detect type
-    ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash'].forEach(t => {
+    // Auto-detect type from URL path
+    ['vless', 'vmess', 'hysteria2', 'hysteria', 'trojan', 'ss', 'clash', 'singbox'].forEach(t => {
         if (pathPart.includes(t)) targetType = t;
     });
     if (!targetType) targetType = 'all';
@@ -167,6 +169,7 @@ async function handleTelegramCommand(message, env, origin) {
     const chatId = message.chat.id;
     const text = message.text.trim();
     
+    // --- Helper: Send Text ---
     const send = async (msg) => {
         await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendMessage`, {
             method: 'POST',
@@ -181,47 +184,109 @@ async function handleTelegramCommand(message, env, origin) {
         });
     };
 
+    // --- Helper: Send Photo (for QR) ---
+    const sendPhoto = async (photoUrl, caption) => {
+        await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/sendPhoto`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                chat_id: chatId, 
+                photo: photoUrl,
+                caption: caption,
+                parse_mode: 'HTML', 
+                reply_markup: BOT_KEYBOARD
+            })
+        });
+    };
+
     if (text.includes('立即更新')) {
-        if (!env.KV) return send(`❌ KV 未绑定`);
-        await send("⏳ 正在全力抓取节点 (支持 VLESS/VMess/Hysteria/Trojan/SS)...");
+        if (!env.KV) return send(`❌ <b>错误:</b> KV 未绑定。请在 Cloudflare Pages 后台绑定 KV Namespace。`);
+        
+        await send("⏳ <b>正在更新...</b>\n正在从预设源抓取并解析节点 (支持 VLESS/VMess/Hysteria/Trojan/SS)...");
         const start = Date.now();
         
         try {
             const nodes = await fetchAndParseAll(PRESET_URLS);
-            if (nodes.length === 0) return send(`⚠️ 抓取完成，但节点数为 0。请检查网络或源。`);
+            if (nodes.length === 0) return send(`⚠️ <b>警告:</b> 抓取完成，但有效节点数为 0。`);
 
             await env.KV.put('NODES', JSON.stringify(nodes));
-            const time = new Date(new Date().getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+            const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             await env.KV.put('LAST_UPDATE', time);
             
-            await send(`✅ <b>更新成功</b>\n📊 节点数: ${nodes.length}\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s`);
+            // Generate Protocol Stats
+            const stats = {};
+            nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
+            const statsStr = Object.entries(stats).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
+
+            await send(`✅ <b>更新成功</b>\n\n📊 <b>节点总数:</b> ${nodes.length}\n${statsStr}\n\n⏱️ 耗时: ${((Date.now()-start)/1000).toFixed(1)}s\n🕒 时间: ${time}`);
         } catch (e) {
-            await send(`❌ 错误: ${e.message}`);
+            await send(`❌ <b>更新失败:</b> ${e.message}`);
         }
+
     } else if (text.includes('系统状态')) {
         let count = 0;
         let last = "无";
+        let statsStr = "";
+        
         if (env.KV) {
             const s = await env.KV.get('NODES');
-            if(s) count = JSON.parse(s).length;
+            if(s) {
+                const nodes = JSON.parse(s);
+                count = nodes.length;
+                const stats = {};
+                nodes.forEach(n => { stats[n.p] = (stats[n.p] || 0) + 1; });
+                statsStr = Object.entries(stats).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
+            }
             last = await env.KV.get('LAST_UPDATE') || "无";
         }
-        await send(`📊 <b>系统状态</b>\n节点: ${count}\n更新: ${last}`);
+        
+        await send(`📊 <b>系统状态</b>\n\n🟢 <b>节点总数:</b> ${count}\n${statsStr}\n\n🕒 <b>上次更新:</b> ${last}`);
+
     } else if (text.includes('订阅链接')) {
-        const links = [
-            `🌍 <b>Universal (通用)</b>\n<code>${origin}/all</code>`,
-            `🚀 <b>VLESS</b>\n<code>${origin}/vless</code>`,
-            `⚡ <b>Hysteria 2</b>\n<code>${origin}/hysteria2</code>`,
-            `🐱 <b>Clash</b>\n<code>${origin}/clash</code>`
-        ].join('\n\n');
-        await send(links);
+        const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(origin + '/all')}`;
+        const msg = [
+            `🔗 <b>订阅链接 (Subscription)</b>`,
+            ``,
+            `🌍 <b>Universal (通用):</b>`,
+            `<code>${origin}/all</code>`,
+            ``,
+            `🚀 <b>VLESS:</b>`,
+            `<code>${origin}/vless</code>`,
+            ``,
+            `⚡ <b>Hysteria 2:</b>`,
+            `<code>${origin}/hysteria2</code>`,
+            ``,
+            `🐱 <b>Clash:</b>`,
+            `<code>${origin}/clash</code>`
+        ].join('\n');
+
+        // Attempt to send Photo with Caption
+        try {
+            await sendPhoto(qrApi, msg);
+        } catch(e) {
+            // Fallback to text if photo fails
+            await send(msg);
+        }
+
+    } else if (text.includes('检测配置')) {
+        const checks = [
+            `⚙️ <b>配置检测</b>`,
+            ``,
+            `KV Binding: ${env.KV ? '✅' : '❌ (未绑定)'}`,
+            `TG_TOKEN: ${env.TG_TOKEN ? '✅' : '❌ (未设置)'}`,
+            `ADMIN_ID: ${env.ADMIN_ID ? '✅' : '⚠️ (公开模式)'}`,
+            `Domain: ${origin}`,
+            `Parse Engine: Ultimate v5`
+        ].join('\n');
+        await send(checks);
+
     } else {
-        await send(`👋 SubLink Bot Ready.`);
+        await send(`👋 <b>SubLink Bot Ready</b>\n\n请点击底部键盘菜单进行操作。`);
     }
 }
 
 // ==========================================
-// 4. Ultimate Parser Logic
+// 4. Ultimate Parser Logic (v5)
 // ==========================================
 async function fetchAndParseAll(urls) {
     const nodes = [];
@@ -253,7 +318,8 @@ async function fetchAndParseAll(urls) {
                 } else {
                     // Strategy 2: Base64/Regex
                     let decoded = text;
-                    if (!text.includes(' ') && text.length > 20) {
+                    // Detect if it is Base64
+                    if (!text.includes(' ') && !text.includes('\n') && text.length > 20) {
                         try { decoded = safeAtob(text); } catch(e) {}
                     }
                     const regexNodes = extractNodesRegex(decoded);
@@ -294,16 +360,14 @@ function findNodesRecursively(obj) {
             });
             foundChildren = true;
         }
-        if (foundChildren) return results; // If we found children here, we don't treat this object itself as a node
+        if (foundChildren) return results; 
     }
 
     // --- Case B: Direct Node Object ---
     const node = parseFlatNode(obj);
     if (node) {
         results.push(node);
-        // Important: A node object usually doesn't contain other nodes, 
-        // but if it's a "selector" or something weird, we might need to continue.
-        // For standard configs, returning here is safe.
+        // Standard Sing-box objects don't nest further
         return results; 
     }
 
@@ -350,10 +414,10 @@ function parseFlatNode(ob) {
     
     // Aggressive Type Inference
     if (!type) {
-        if (getProp(ob, ['uuid', 'id', 'user_id'])) type = 'vless'; // Likely VLESS or VMess
+        if (getProp(ob, ['uuid', 'id', 'user_id'])) type = 'vless'; 
         else if (getProp(ob, ['auth_str', 'auth_payload', 'up_mbps'])) type = 'hysteria';
         else if (getProp(ob, ['password']) && getProp(ob, ['method', 'cipher'])) type = 'ss';
-        else if (getProp(ob, ['password']) && !getProp(ob, ['method'])) type = 'trojan'; // Fallback to Trojan or Hysteria2
+        else if (getProp(ob, ['password']) && !getProp(ob, ['method'])) type = 'trojan'; 
     }
 
     // Disambiguate VLESS/VMess if inferred solely by UUID
